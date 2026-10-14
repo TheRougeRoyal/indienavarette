@@ -61,6 +61,7 @@ public class DashboardUI extends JFrame {
         add(centerPanel, BorderLayout.CENTER);
 
         updateClientList();
+        new javax.swing.Timer(5000, e -> updateClientList()).start();
     }
 
     private void updateClientList() {
@@ -76,7 +77,7 @@ public class DashboardUI extends JFrame {
             clientTableModel.addRow(new Object[]{
                 id,
                 session.getHostname(),
-                session.getLastSeen().format(formatter)
+                session.getLastSeen().format(formatter) + (server.isConnected(session) ? " (online)" : " (expired)")
             });
             clientSelector.addItem(id);
         });

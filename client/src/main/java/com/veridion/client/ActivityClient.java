@@ -11,7 +11,7 @@ public class ActivityClient {
     private final String serverHost;
     private IActivityServer server;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
-    private final NativeWindowTracker windowTracker = NativeWindowTracker.getInstance();
+    private final DesktopTracker windowTracker = DesktopTrackers.current();
 
     public ActivityClient(String serverHost) {
         this.clientId = UUID.randomUUID().toString().substring(0, 8);
@@ -24,7 +24,7 @@ public class ActivityClient {
             this.server = (IActivityServer) registry.lookup("ActivityServer");
             System.out.println("Connected to server. Client ID: " + clientId);
 
-            server.registerClient(clientId, "localhost");
+            server.registerClient(clientId, java.net.InetAddress.getLocalHost().getHostName());
             startHeartbeat();
             startTracking();
         } catch (Exception e) {
@@ -46,9 +46,8 @@ public class ActivityClient {
 
     private void startTracking() {
         scheduler.scheduleAtFixedRate(() -> {
-            String app = windowTracker.getActiveAppName();
-            String title = windowTracker.getActiveWindowTitle();
-            reportActivity(app, title);
+            DesktopTracker.CaptureResult result = windowTracker.capture();
+            reportActivity("[" + result.status() + "] " + result.appName(), result.windowTitle());
         }, 0, 5, java.util.concurrent.TimeUnit.SECONDS);
     }
 
@@ -64,10 +63,16 @@ public class ActivityClient {
     }
 
     public static void main(String[] args) {
-        // Ensure the native library is in the library path
-        System.setProperty("java.library.path", "/home/aakashraj/Documents/github-aakash/indienavarette/native/build");
-
-        ActivityClient client = new ActivityClient("localhost");
+        if (java.awt.GraphicsEnvironment.isHeadless()) {
+            System.err.println("Activity tracking requires a visible session and explicit user consent.");
+            return;
+        }
+        int consent = javax.swing.JOptionPane.showConfirmDialog(null,
+                "This client will periodically send the active application name and window title to the configured server. Start tracking?",
+                "Activity tracking consent", javax.swing.JOptionPane.YES_NO_OPTION, javax.swing.JOptionPane.QUESTION_MESSAGE);
+        if (consent != javax.swing.JOptionPane.YES_OPTION) return;
+        String host = args.length > 0 ? args[0] : System.getProperty("activity.server.host", "localhost");
+        ActivityClient client = new ActivityClient(host);
         client.connect();
     }
 }

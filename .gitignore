@@ -1,0 +1,10 @@
+**/target/
+native/build/
+**/build/
+*.so
+*.dylib
+*.dll
+*.log
+.idea/
+.vscode/
+*.iml

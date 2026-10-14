@@ -1,64 +1,56 @@
 #include <jni.h>
 #include <X11/Xlib.h>
-#include <X11/Xutil.h>
 #include <X11/Xatom.h>
-#include <string.h>
+#include <X11/Xutil.h>
 #include <stdio.h>
-#include <stdlib.h>
+#include <string.h>
 
-// Function to get the active window title on X11
-void get_active_window_info(Display *display, Window root, char *app_name, char *window_title, int max_len) {
-    Atom active_window_atom = XInternAtom(display, "_NET_ACTIVE_WINDOW", False);
-    Atom actual_type;
-    int actual_format;
-    unsigned long nitems = 1;
-    unsigned long bytes_after = 0;
-    Window active_window;
+static void copy_text(char *dst, size_t cap, const unsigned char *src, unsigned long n) {
+    size_t len = n < cap - 1 ? (size_t)n : cap - 1;
+    if (src && len) memcpy(dst, src, len);
+    dst[len] = '\0';
+}
 
-    if (XGetWindowProperty(display, root, active_window_atom, 0, 1, False,
-                           AnyPropertyType, &actual_type, &actual_format, &nitems,
-                           &bytes_after, (unsigned char *)&active_window) == Success) {
+static Window active_window(Display *d, Window root) {
+    Atom prop = XInternAtom(d, "_NET_ACTIVE_WINDOW", True), type;
+    int format; unsigned long n = 0, after = 0; unsigned char *data = NULL;
+    Window w = None;
+    if (prop != None && XGetWindowProperty(d, root, prop, 0, 1, False, XA_WINDOW,
+            &type, &format, &n, &after, &data) == Success && data && type == XA_WINDOW && format == 32 && n == 1)
+        w = *(Window *)data;
+    if (data) XFree(data);
+    return w;
+}
 
-        char *title = NULL;
-        if (XFetchName(display, active_window, &title)) {
-            strncpy(window_title, title ? title : "Unknown", max_len - 1);
-            XFree(title);
-        } else {
-            strncpy(window_title, "Unknown", max_len - 1);
-        }
-
-        // Simplified app name retrieval for now
-        strncpy(app_name, "X11 App", max_len - 1);
-    } else {
-        strncpy(app_name, "None", max_len - 1);
-        strncpy(window_title, "None", max_len - 1);
+static void window_info(Display *d, Window root, char *app, size_t appcap, char *title, size_t titlecap) {
+    snprintf(app, appcap, "Unknown"); snprintf(title, titlecap, "Window metadata unavailable");
+    Window w = active_window(d, root); if (w == None) return;
+    Atom utf8 = XInternAtom(d, "UTF8_STRING", True), name = XInternAtom(d, "_NET_WM_NAME", True);
+    Atom type; int format; unsigned long n = 0, after = 0; unsigned char *data = NULL;
+    if (name != None && utf8 != None && XGetWindowProperty(d, w, name, 0, 4096, False, utf8,
+            &type, &format, &n, &after, &data) == Success && data && type == utf8 && format == 8 && n > 0)
+        copy_text(title, titlecap, data, n);
+    if (data) { XFree(data); data = NULL; }
+    if (strcmp(title, "Window metadata unavailable") == 0 && XFetchName(d, w, (char **)&data) && data) {
+        snprintf(title, titlecap, "%s", (char *)data); XFree(data); data = NULL;
     }
+    Atom wmclass = XInternAtom(d, "WM_CLASS", True);
+    if (wmclass != None && XGetWindowProperty(d, w, wmclass, 0, 1024, False, XA_STRING,
+            &type, &format, &n, &after, &data) == Success && data && type == XA_STRING && format == 8 && n > 0) {
+        const char *instance = (const char *)data;
+        size_t first = strnlen(instance, n);
+        const char *identity = first + 1 < n ? instance + first + 1 : instance;
+        snprintf(app, appcap, "%.*s", (int)(n - (identity - instance)), identity);
+    }
+    if (data) XFree(data);
 }
 
-JNIEXPORT jstring JNICALL Java_com_veridion_client_NativeWindowTracker_getActiveWindowTitle(JNIEnv *env, jobject obj) {
-    Display *display = XOpenDisplay(NULL);
-    if (!display) return (*env)->NewStringUTF(env, "Error: Cannot open display");
-
-    Window root = DefaultRootWindow(display);
-    char title[256];
-    char app[256];
-
-    get_active_window_info(display, root, app, title, 256);
-    XCloseDisplay(display);
-
-    return (*env)->NewStringUTF(env, title);
+static jstring get_value(JNIEnv *env, int want_app) {
+    Display *d = XOpenDisplay(NULL);
+    if (!d) return (*env)->NewStringUTF(env, want_app ? "Unknown" : "Display unavailable");
+    char app[512], title[2048]; window_info(d, DefaultRootWindow(d), app, sizeof(app), title, sizeof(title));
+    XCloseDisplay(d);
+    return (*env)->NewStringUTF(env, want_app ? app : title);
 }
-
-JNIEXPORT jstring JNICALL Java_com_veridion_client_NativeWindowTracker_getActiveAppName(JNIEnv *env, jobject obj) {
-    Display *display = XOpenDisplay(NULL);
-    if (!display) return (*env)->NewStringUTF(env, "Error: Cannot open display");
-
-    Window root = DefaultRootWindow(display);
-    char title[256];
-    char app[256];
-
-    get_active_window_info(display, root, app, title, 256);
-    XCloseDisplay(display);
-
-    return (*env)->NewStringUTF(env, app);
-}
+JNIEXPORT jstring JNICALL Java_com_veridion_client_NativeWindowTracker_getActiveWindowTitle(JNIEnv *e, jobject o) { (void)o; return get_value(e, 0); }
+JNIEXPORT jstring JNICALL Java_com_veridion_client_NativeWindowTracker_getActiveAppName(JNIEnv *e, jobject o) { (void)o; return get_value(e, 1); }
