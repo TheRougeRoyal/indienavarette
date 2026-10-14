@@ -9,11 +9,15 @@ public class NativeWindowTracker implements DesktopTracker {
         System.loadLibrary("veridion_native");
     }
 
-    public native String getActiveWindowTitle();
-    public native String getActiveAppName();
+    private native String[] captureActiveWindowInfo();
 
     @Override public CaptureResult capture() {
-        try { return new CaptureResult("SUPPORTED", getActiveAppName(), getActiveWindowTitle()); }
+        try {
+            String[] info = captureActiveWindowInfo();
+            if (info == null || info.length < 2) return new CaptureResult("UNAVAILABLE", "Unknown", "Window metadata unavailable");
+            String status = "Display unavailable".equals(info[1]) ? "UNAVAILABLE" : "SUPPORTED";
+            return new CaptureResult(status, info[0], info[1]);
+        }
         catch (LinkageError | RuntimeException e) { return new CaptureResult("UNAVAILABLE", "Unknown", "Window metadata unavailable"); }
     }
 

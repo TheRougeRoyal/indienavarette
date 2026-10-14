@@ -1,5 +1,8 @@
 package com.veridion.server;
 
+import com.veridion.shared.RmiConfig;
+import javax.rmi.ssl.SslRMIServerSocketFactory;
+import com.veridion.shared.TimeoutSslRmiClientSocketFactory;
 import java.rmi.registry.LocateRegistry;
 import java.rmi.registry.Registry;
 import java.rmi.RemoteException;
@@ -13,9 +16,10 @@ public class ServerMain {
                 System.setProperty("java.rmi.server.hostname", java.net.InetAddress.getLocalHost().getHostAddress());
             }
             ActivityServerImpl server = new ActivityServerImpl();
-            int port = Integer.getInteger("activity.server.port", 1099);
-            Registry registry = LocateRegistry.createRegistry(port);
-            registry.rebind("ActivityServer", server);
+            int port = RmiConfig.port();
+            Registry registry = LocateRegistry.createRegistry(port, new TimeoutSslRmiClientSocketFactory(),
+                    new SslRMIServerSocketFactory(null, null, false));
+            registry.rebind(RmiConfig.BINDING, server);
             System.out.println("Activity Server is running on port " + port + "...");
 
             SwingUtilities.invokeLater(() -> {

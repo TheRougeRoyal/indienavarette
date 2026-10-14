@@ -61,10 +61,11 @@ public class DashboardUI extends JFrame {
         add(centerPanel, BorderLayout.CENTER);
 
         updateClientList();
-        new javax.swing.Timer(5000, e -> updateClientList()).start();
+        new javax.swing.Timer(5000, e -> { updateClientList(); updateActivityLogs(); }).start();
     }
 
     private void updateClientList() {
+        String previouslySelected = (String) clientSelector.getSelectedItem();
         clientTableModel.setRowCount(0);
         Map<String, ActivityServerImpl.ClientSession> clients = server.getClients();
 
@@ -81,6 +82,7 @@ public class DashboardUI extends JFrame {
             });
             clientSelector.addItem(id);
         });
+        if (previouslySelected != null) clientSelector.setSelectedItem(previouslySelected);
     }
 
     private void updateActivityLogs() {

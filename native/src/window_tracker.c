@@ -3,12 +3,33 @@
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void copy_text(char *dst, size_t cap, const unsigned char *src, unsigned long n) {
     size_t len = n < cap - 1 ? (size_t)n : cap - 1;
     if (src && len) memcpy(dst, src, len);
     dst[len] = '\0';
+}
+
+static jstring new_utf8_string(JNIEnv *env, const char *src) {
+    size_t bytes = strlen(src), i = 0, units = 0;
+    jchar *utf16 = calloc(bytes + 1, sizeof(jchar));
+    if (!utf16) return NULL;
+    while (i < bytes) {
+        unsigned char c = (unsigned char)src[i++]; unsigned int cp;
+        if (c < 0x80) cp = c;
+        else if ((c & 0xe0) == 0xc0 && i < bytes) cp = ((c & 0x1f) << 6) | ((unsigned char)src[i++] & 0x3f);
+        else if ((c & 0xf0) == 0xe0 && i + 1 < bytes) { cp = ((c & 0x0f) << 12) | (((unsigned char)src[i] & 0x3f) << 6) | ((unsigned char)src[i+1] & 0x3f); i += 2; }
+        else if ((c & 0xf8) == 0xf0 && i + 2 < bytes) { cp = ((c & 7) << 18) | (((unsigned char)src[i] & 0x3f) << 12) | (((unsigned char)src[i+1] & 0x3f) << 6) | ((unsigned char)src[i+2] & 0x3f); i += 3; }
+        else cp = 0xfffd;
+        if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) cp = 0xfffd;
+        if (cp <= 0xffff) utf16[units++] = (jchar)cp;
+        else { cp -= 0x10000; utf16[units++] = (jchar)(0xd800 + (cp >> 10)); utf16[units++] = (jchar)(0xdc00 + (cp & 0x3ff)); }
+    }
+    jstring result = (*env)->NewString(env, utf16, (jsize)units);
+    free(utf16);
+    return result;
 }
 
 static Window active_window(Display *d, Window root) {
@@ -45,12 +66,18 @@ static void window_info(Display *d, Window root, char *app, size_t appcap, char 
     if (data) XFree(data);
 }
 
-static jstring get_value(JNIEnv *env, int want_app) {
+JNIEXPORT jobjectArray JNICALL Java_com_veridion_client_NativeWindowTracker_captureActiveWindowInfo(JNIEnv *env, jobject obj) {
+    (void)obj;
     Display *d = XOpenDisplay(NULL);
-    if (!d) return (*env)->NewStringUTF(env, want_app ? "Unknown" : "Display unavailable");
-    char app[512], title[2048]; window_info(d, DefaultRootWindow(d), app, sizeof(app), title, sizeof(title));
-    XCloseDisplay(d);
-    return (*env)->NewStringUTF(env, want_app ? app : title);
+    char app[512] = "Unknown", title[2048] = "Display unavailable";
+    if (d) { window_info(d, DefaultRootWindow(d), app, sizeof(app), title, sizeof(title)); XCloseDisplay(d); }
+    jclass string_class = (*env)->FindClass(env, "java/lang/String");
+    if (!string_class) return NULL;
+    jobjectArray result = (*env)->NewObjectArray(env, 2, string_class, NULL);
+    if (!result) return NULL;
+    jstring app_value = new_utf8_string(env, app);
+    jstring title_value = new_utf8_string(env, title);
+    if (app_value) { (*env)->SetObjectArrayElement(env, result, 0, app_value); (*env)->DeleteLocalRef(env, app_value); }
+    if (title_value) { (*env)->SetObjectArrayElement(env, result, 1, title_value); (*env)->DeleteLocalRef(env, title_value); }
+    return result;
 }
-JNIEXPORT jstring JNICALL Java_com_veridion_client_NativeWindowTracker_getActiveWindowTitle(JNIEnv *e, jobject o) { (void)o; return get_value(e, 0); }
-JNIEXPORT jstring JNICALL Java_com_veridion_client_NativeWindowTracker_getActiveAppName(JNIEnv *e, jobject o) { (void)o; return get_value(e, 1); }
