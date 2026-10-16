@@ -6,7 +6,7 @@ public final class DesktopTrackers {
     public static DesktopTracker current() {
         String session = System.getenv("XDG_SESSION_TYPE");
         if ("wayland".equalsIgnoreCase(session) || System.getenv("WAYLAND_DISPLAY") != null) {
-            return () -> new DesktopTracker.CaptureResult("UNSUPPORTED_CAPABILITY", "Wayland", "Active window metadata requires a supported portal; unavailable");
+            return WaylandWindowTracker.getInstance();
         }
         try { return NativeWindowTracker.getInstance(); }
         catch (LinkageError e) { return () -> new DesktopTracker.CaptureResult("UNAVAILABLE", "Unknown", "X11 tracker unavailable"); }

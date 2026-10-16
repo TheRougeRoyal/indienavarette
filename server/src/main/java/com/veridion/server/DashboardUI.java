@@ -15,6 +15,9 @@ public class DashboardUI extends JFrame {
     private final DefaultTableModel clientTableModel;
     private final JTextArea activityLogArea;
     private final JComboBox<String> clientSelector;
+    private final JTextField searchField;
+    private final JButton exportBtn;
+
 
     public DashboardUI(ActivityServerImpl server) {
         this.server = server;
@@ -47,9 +50,19 @@ public class DashboardUI extends JFrame {
         clientSelector = new JComboBox<>();
         clientSelector.addActionListener(e -> updateActivityLogs());
 
-        JLabel label = new JLabel("Select Client: ");
+        searchField = new JTextField(15);
+        searchField.addActionListener(e -> updateActivityLogs());
+
+        exportBtn = new JButton("Export CSV");
+        exportBtn.addActionListener(e -> exportToCsv());
+
+        JLabel label = new JLabel("Client: ");
         topCenter.add(label);
         topCenter.add(clientSelector);
+        topCenter.add(new JLabel(" Filter: "));
+        topCenter.add(searchField);
+        topCenter.add(exportBtn);
+
 
         activityLogArea = new JTextArea();
         activityLogArea.setEditable(false);
@@ -98,16 +111,54 @@ public class DashboardUI extends JFrame {
             return;
         }
 
+        String filter = searchField.getText().toLowerCase();
         StringBuilder sb = new StringBuilder();
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
         logs.descendingMap().forEach((time, event) -> {
-            sb.append(String.format("[%s] %s | %s\n",
-                time.format(formatter),
-                event.appName(),
-                event.windowTitle()));
+            String app = event.appName();
+            String title = event.windowTitle();
+            if (filter.isBlank() || app.toLowerCase().contains(filter) || title.toLowerCase().contains(filter)) {
+                sb.append(String.format("[%s] %s | %s\n",
+                    time.format(formatter),
+                    app,
+                    title));
+            }
         });
-
         activityLogArea.setText(sb.toString());
     }
+
+    private void exportToCsv() {
+        String selectedId = (String) clientSelector.getSelectedItem();
+        if (selectedId == null || selectedId.equals("None")) {
+            JOptionPane.showMessageDialog(this, "Please select a client first.");
+            return;
+        }
+
+        NavigableMap<LocalDateTime, ActivityEvent> logs = server.getLogsForClient(selectedId);
+        if (logs == null || logs.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "No logs available to export.");
+            return;
+        }
+
+        JFileChooser fileChooser = new JFileChooser();
+        fileChooser.setSelectedFile(new java.io.File(selectedId + "_activity.csv"));
+        if (fileChooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
+            java.io.File file = fileChooser.getSelectedFile();
+            try (java.io.PrintWriter writer = new java.io.PrintWriter(file)) {
+                writer.println("Timestamp,Application,WindowTitle");
+                DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+                logs.forEach((time, event) -> {
+                    writer.printf("\"%s\",\"%s\",\"%s\"\n",
+                        time.format(formatter),
+                        event.appName().replace("\"", "\"\""),
+                        event.windowTitle().replace("\"", "\"\""));
+                });
+                JOptionPane.showMessageDialog(this, "Export successful!");
+            } catch (java.io.IOException e) {
+                JOptionPane.showMessageDialog(this, "Export failed: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
 }

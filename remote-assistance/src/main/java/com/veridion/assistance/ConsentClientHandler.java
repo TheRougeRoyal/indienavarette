@@ -8,10 +8,13 @@ import javax.rmi.ssl.SslRMIServerSocketFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.UUID;
 import java.util.function.Predicate;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import javax.swing.JOptionPane;
-import javax.swing.SwingUtilities;
+import java.awt.Rectangle;
+import java.awt.Robot;
+import java.awt.Toolkit;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import javax.imageio.ImageIO;
 
 /** Client-side consent endpoint. Assistance is never accepted without an explicit local choice. */
 public final class ConsentClientHandler extends UnicastRemoteObject implements IClientHandler {
@@ -75,6 +78,28 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
                 && (state == SessionState.ACTIVE || state == SessionState.REQUESTING_CONSENT)) {
             state = SessionState.TERMINATED;
             activeSessionId = null;
+        }
+    }
+
+    @Override
+    public synchronized byte[] captureScreen(String sessionId, String operatorCredential) throws RemoteException {
+        if (!authorized(operatorCredential)) throw new RemoteException("Assistance operator is not authorized");
+        if (sessionId == null || !sessionId.equals(activeSessionId) || state != SessionState.ACTIVE) {
+            throw new RemoteException("No active assistance session authorized for screen capture");
+        }
+
+        try {
+            Robot robot = new Robot();
+            java.awt.Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
+            Rectangle screenRect = new Rectangle(0, 0, screenSize.width, screenSize.height);
+            BufferedImage screenFullImage = robot.createScreenCapture(screenRect);
+
+            try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+                ImageIO.write(screenFullImage, "png", baos);
+                return baos.toByteArray();
+            }
+        } catch (java.awt.AWTException | IOException e) {
+            throw new RemoteException("Failed to capture screen: " + e.getMessage());
         }
     }
 
