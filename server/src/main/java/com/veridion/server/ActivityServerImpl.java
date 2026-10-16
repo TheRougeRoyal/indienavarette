@@ -37,7 +37,7 @@ public class ActivityServerImpl extends UnicastRemoteObject implements IActivity
 
     ActivityServerImpl(String enrollmentToken, Duration heartbeatTimeout) throws RemoteException { this(Map.of("c1", enrollmentToken), 0, heartbeatTimeout); }
 
-    private ActivityServerImpl(Map<String, String> enrollmentTokens, int objectPort, Duration heartbeatTimeout) throws RemoteException {
+    protected ActivityServerImpl(Map<String, String> enrollmentTokens, int objectPort, Duration heartbeatTimeout) throws RemoteException {
         super(objectPort, new TimeoutSslRmiClientSocketFactory(), new SslRMIServerSocketFactory(null, null, false));
         if (enrollmentTokens == null || enrollmentTokens.isEmpty()) throw new RemoteException("No client enrollment credentials configured");
         if (heartbeatTimeout == null || heartbeatTimeout.isZero() || heartbeatTimeout.isNegative()) throw new RemoteException("Heartbeat timeout must be positive");
@@ -73,11 +73,15 @@ public class ActivityServerImpl extends UnicastRemoteObject implements IActivity
     @Override
     public String registerClient(String clientId, String hostname, String enrollmentToken) throws RemoteException {
         if (clientId == null || clientId.isBlank() || clientId.length() > 128 || hostname == null || hostname.isBlank() || hostname.length() > 255)
-            throw new RemoteException("Invalid client registration");
+            throw new RemoteException("Invalid client registration parameters");
         byte[] expectedHash = enrollmentTokenHashes.get(clientId);
         if (enrollmentToken == null || enrollmentToken.length() > 512 || expectedHash == null
                 || !MessageDigest.isEqual(expectedHash, sha256(enrollmentToken)))
             throw new RemoteException("Client enrollment rejected");
+
+        // ponytail: invalidate old session on re-registration
+        clientCredentials.remove(clientId);
+
         System.out.println("Registering client: " + clientId + " [" + hostname + "]");
         clients.put(clientId, new ClientSession(clientId, hostname));
         activityLogs.computeIfAbsent(clientId, ignored -> new ConcurrentSkipListMap<>());

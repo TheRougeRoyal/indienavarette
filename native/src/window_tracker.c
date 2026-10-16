@@ -21,8 +21,10 @@
 #include <string.h>
 
 static void copy_text(char *dst, size_t cap, const unsigned char *src, unsigned long n) {
+    if (!src || n == 0) { dst[0] = '\0'; return; }
     size_t len = n < cap - 1 ? (size_t)n : cap - 1;
-    if (src && len) memcpy(dst, src, len);
+    // ponytail: naive truncate; in a high-perf lib we'd check UTF-8 boundaries
+    memcpy(dst, src, len);
     dst[len] = '\0';
 }
 
@@ -73,9 +75,13 @@ static void window_info(Display *d, Window root, char *app, size_t appcap, char 
     if (wmclass != None && XGetWindowProperty(d, w, wmclass, 0, 1024, False, XA_STRING,
             &type, &format, &n, &after, &data) == Success && data && type == XA_STRING && format == 8 && n > 0) {
         const char *instance = (const char *)data;
-        size_t first = strnlen(instance, n);
-        const char *identity = first + 1 < n ? instance + first + 1 : instance;
-        snprintf(app, appcap, "%.*s", (int)(n - (identity - instance)), identity);
+        const char *cls = instance;
+        while (*cls && *cls != '\0') cls++; // Find the null terminator
+        if (*cls) {
+            snprintf(app, appcap, "%.*s", (int)(n - (cls - instance) - 1), cls);
+        } else {
+            snprintf(app, appcap, "%.*s", (int)strnlen(instance, n), instance);
+        }
     }
     if (data) XFree(data);
 }
