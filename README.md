@@ -11,12 +11,32 @@ Java 21 Maven multi-module application with an optional X11 JNI tracker. Activit
 ## Build from source
 
 ```sh
-mvn clean verify
 cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release
 cmake --build native/build
+mvn -DargLine="-Djava.library.path=$PWD/native/build" clean verify
 ```
 
-Set `-Djava.library.path="$PWD/native/build"` when launching the client, or provide the full library path with `-Dveridion.native.path="$PWD/native/build/libveridion_native.so"`. See Secure RMI configuration below for required TLS and enrollment properties. Start `com.veridion.server.ServerMain`, then `com.veridion.client.ActivityClient [server-host]` with the client module and shared module on the classpath.
+The native build is required before Maven verification because `NativeWindowTrackerTest` loads `libveridion_native.so`. Set `-Djava.library.path="$PWD/native/build"` when launching the client, or provide the full library path with `-Dveridion.native.path="$PWD/native/build/libveridion_native.so"`. See Secure RMI configuration below for required TLS and enrollment properties. From the repository root, the Java classpath launch forms are:
+
+```sh
+java -Dactivity.enrollment.file=/secure/path/enrollments.properties \
+  -Djavax.net.ssl.keyStore=/secure/path/server.p12 \
+  -Djavax.net.ssl.keyStorePassword="$SERVER_KEYSTORE_PASSWORD" \
+  -Djavax.net.ssl.keyStoreType=PKCS12 \
+  -cp server/target/server-1.0-SNAPSHOT.jar:shared/target/shared-1.0-SNAPSHOT.jar \
+  com.veridion.server.ServerMain
+
+java -Dactivity.client.id=client-01 \
+  -Dactivity.enrollment.token="$CLIENT_ENROLLMENT_TOKEN" \
+  -Djavax.net.ssl.trustStore=/secure/path/truststore.p12 \
+  -Djavax.net.ssl.trustStorePassword="$TRUSTSTORE_PASSWORD" \
+  -Djavax.net.ssl.trustStoreType=PKCS12 \
+  -Djava.library.path="$PWD/native/build" \
+  -cp client/target/client-1.0-SNAPSHOT.jar:shared/target/shared-1.0-SNAPSHOT.jar \
+  com.veridion.client.ActivityClient server.example.org
+```
+
+Provide the password and token variables through a secret manager or another protected mechanism rather than shell history. Configure the server certificate SAN for the host passed to the client.
 
 ## Secure RMI configuration
 
@@ -24,4 +44,4 @@ The server and client read the same `activity.server.port` property (default `10
 
 Provision one unique random token per client in a server-only Java properties file, for example `client-01=<at-least-32-character-random-token>`. Protect it with owner-only filesystem permissions. Start the server with `-Dactivity.enrollment.file=/secure/path/enrollments.properties`. Start each client with `-Dactivity.client.id=client-01 -Dactivity.enrollment.token=<that-client-token>`. The server stores token hashes, checks ID/token pairs at enrollment, and issues a separate session credential for subsequent calls. Re-enrollment rotates that credential. Do not expose RMI ports without TLS and restricted firewall rules.
 
-The client uses `activity.rmi.connect-timeout-ms` and `activity.rmi.read-timeout-ms` (defaults 5000 and 10000) for bounded RMI calls. It retries using exponential delays from 1 to 60 seconds. The consent endpoint requires `-Dactivity.assistance.operator-token=<protected-32-character-token>` and an authenticated TLS RMI caller. It currently implements only consent and session termination state; it has no screen sharing or remote control functionality and is not yet connected to a server-side assistance workflow.
+The client uses `activity.rmi.connect-timeout-ms` and `activity.rmi.read-timeout-ms` (defaults 5000 and 10000) for bounded RMI calls. It retries using exponential delays from 1 to 60 seconds. The consent endpoint in `remote-assistance` requires `-Dactivity.assistance.operator-token=<protected-32-character-token>` and TLS RMI transport. It contains screen capture and input methods, but it is not exported through the activity server registry or connected to a server-side operator workflow. Treat those methods as an unintegrated prototype; do not expose them as a production remote-assistance service.

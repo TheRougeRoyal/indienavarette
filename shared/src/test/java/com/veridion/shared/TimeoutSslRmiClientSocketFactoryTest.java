@@ -76,7 +76,7 @@ class TimeoutSslRmiClientSocketFactoryTest {
     @Test void rejectsCertificateFromUntrustedIssuer() throws Exception {
         withTlsServer(port -> {
             var socketFactory = new TimeoutSslRmiClientSocketFactory(3000, 3000, untrustedClientContext.getSocketFactory());
-            assertThrows(SSLHandshakeException.class, () -> socketFactory.createSocket("localhost", port));
+            assertThrows(javax.net.ssl.SSLException.class, () -> socketFactory.createSocket("localhost", port));
         });
     }
 

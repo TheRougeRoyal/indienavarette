@@ -27,13 +27,21 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     private volatile SessionState state = SessionState.IDLE;
     private volatile String activeSessionId;
     private final Predicate<String> consentPrompt;
+    private final Predicate<String> inputConsentPrompt;
     private final byte[] operatorCredentialHash;
 
-    public ConsentClientHandler() throws RemoteException { this(ConsentClientHandler::showPrompt, System.getProperty("activity.assistance.operator-token")); }
+    public ConsentClientHandler() throws RemoteException {
+        this(ConsentClientHandler::showPrompt, ConsentClientHandler::showInputPrompt,
+                System.getProperty("activity.assistance.operator-token"));
+    }
     ConsentClientHandler(Predicate<String> consentPrompt, String operatorCredential) throws RemoteException {
+        this(consentPrompt, consentPrompt, operatorCredential);
+    }
+    ConsentClientHandler(Predicate<String> consentPrompt, Predicate<String> inputConsentPrompt, String operatorCredential) throws RemoteException {
         super(0, new TimeoutSslRmiClientSocketFactory(), new SslRMIServerSocketFactory(null, null, false));
         if (operatorCredential == null || operatorCredential.length() < 32) throw new RemoteException("Configure a protected assistance operator token of at least 32 characters");
         this.consentPrompt = consentPrompt;
+        this.inputConsentPrompt = inputConsentPrompt;
         this.operatorCredentialHash = sha256(operatorCredential);
     }
 
@@ -77,6 +85,15 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
         return choice[0] == JOptionPane.YES_OPTION;
     }
 
+    private static boolean showInputPrompt(String ignored) {
+        final int[] choice = {JOptionPane.CLOSED_OPTION};
+        try { SwingUtilities.invokeAndWait(() -> choice[0] = JOptionPane.showConfirmDialog(null,
+                "The operator is requesting remote control of your mouse and keyboard. Allow it?",
+                "Remote Input Request", JOptionPane.YES_NO_OPTION, JOptionPane.QUESTION_MESSAGE)); }
+        catch (Exception e) { return false; }
+        return choice[0] == JOptionPane.YES_OPTION;
+    }
+
     @Override public synchronized void terminateSession(String sessionId, String operatorCredential) throws RemoteException {
         if (!authorized(operatorCredential)) throw new RemoteException("Assistance operator is not authorized");
         if (sessionId != null && sessionId.equals(activeSessionId)
@@ -116,18 +133,10 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
         if (state == SessionState.ACTIVE_CONTROL) return;
         if (state != SessionState.ACTIVE_VIEW) throw new RemoteException("Client must first be in a viewing session");
 
-        final int[] choice = {JOptionPane.CLOSED_OPTION};
-        try {
-            SwingUtilities.invokeAndWait(() -> choice[0] = JOptionPane.showConfirmDialog(null,
-                "The operator is requesting remote control of your mouse and keyboard. Allow it?",
-                "Remote Input Request", JOptionPane.YES_NO_OPTION, JOptionPane.QUESTION_MESSAGE));
-        } catch (Exception e) {
-            throw new RemoteException("Unable to obtain input consent", e);
-        }
-
-        if (choice[0] == JOptionPane.YES_OPTION) {
-            state = SessionState.ACTIVE_CONTROL;
-        }
+        final boolean accepted;
+        try { accepted = inputConsentPrompt.test("Remote input control request"); }
+        catch (RuntimeException e) { throw new RemoteException("Unable to obtain input consent", e); }
+        if (accepted) state = SessionState.ACTIVE_CONTROL;
     }
 
     @Override
