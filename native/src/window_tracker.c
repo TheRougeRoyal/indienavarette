@@ -1,4 +1,18 @@
-#include <jni.h>
+#if defined(__has_include)
+#  if __has_include(<jni.h>)
+#    include <jni.h>
+#  elif __has_include("/usr/lib/jvm/default-java/include/jni.h")
+#    include "/usr/lib/jvm/default-java/include/jni.h"
+#  elif __has_include("/usr/lib/jvm/java-17-openjdk-amd64/include/jni.h")
+#    include "/usr/lib/jvm/java-17-openjdk-amd64/include/jni.h"
+#  elif __has_include("/usr/lib/jvm/java-11-openjdk-amd64/include/jni.h")
+#    include "/usr/lib/jvm/java-11-openjdk-amd64/include/jni.h"
+#  else
+#    error "jni.h not found; add the JDK include directory to the compiler include path"
+#  endif
+#else
+#  include <jni.h>
+#endif
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>

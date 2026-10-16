@@ -9,6 +9,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class RetryBackoffTest {
+    @Test void closingIsIdempotentAndPreventsSchedulerRestart() {
+        ActivityClient client = new ActivityClient("localhost", () -> new DesktopTracker.CaptureResult("SUPPORTED", "Editor", "Document"),
+                (host, port, id, token) -> { throw new AssertionError("closed client must not enroll"); });
+        client.close();
+        client.close();
+        client.connect();
+    }
+
     @Test void reconnectionDelayDoublesCapsAndResetsAfterSuccess() {
         RetryBackoff backoff = new RetryBackoff();
         assertEquals(1, backoff.failedAttemptDelaySeconds());

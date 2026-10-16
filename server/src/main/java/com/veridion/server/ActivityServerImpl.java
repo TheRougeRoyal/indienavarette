@@ -33,6 +33,8 @@ public class ActivityServerImpl extends UnicastRemoteObject implements IActivity
 
     ActivityServerImpl(String enrollmentToken) throws RemoteException { this(Map.of("c1", enrollmentToken), 0, Duration.ofSeconds(HEARTBEAT_TIMEOUT_SECONDS)); }
 
+    ActivityServerImpl(String enrollmentToken, int objectPort) throws RemoteException { this(Map.of("c1", enrollmentToken), objectPort, Duration.ofSeconds(HEARTBEAT_TIMEOUT_SECONDS)); }
+
     ActivityServerImpl(String enrollmentToken, Duration heartbeatTimeout) throws RemoteException { this(Map.of("c1", enrollmentToken), 0, heartbeatTimeout); }
 
     private ActivityServerImpl(Map<String, String> enrollmentTokens, int objectPort, Duration heartbeatTimeout) throws RemoteException {

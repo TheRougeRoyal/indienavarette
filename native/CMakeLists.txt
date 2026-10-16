@@ -9,8 +9,6 @@ find_package(JNI REQUIRED COMPONENTS JVM)
 # Find X11
 find_package(X11 REQUIRED)
 
-find_package(X11 REQUIRED)
-
 # Native source files
 set(SOURCES src/window_tracker.c)
 

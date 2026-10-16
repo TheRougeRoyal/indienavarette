@@ -19,6 +19,7 @@ public class ActivityClient implements AutoCloseable {
     private final ServerConnector connector;
     private volatile Consumer<String> statusListener = status -> { };
     private volatile boolean started;
+    private volatile boolean closed;
     private final RetryBackoff retryBackoff = new RetryBackoff();
     private long nextAttemptNanos;
     private long lastHeartbeatNanos;
@@ -44,7 +45,7 @@ public class ActivityClient implements AutoCloseable {
     }
 
     public synchronized void connect() {
-        if (started) return;
+        if (started || closed) return;
         started = true;
         scheduler.schedule(this::cycleSafely, 0, TimeUnit.SECONDS);
     }
@@ -55,7 +56,8 @@ public class ActivityClient implements AutoCloseable {
         finally {
             if (started && !scheduler.isShutdown()) {
                 long delayNanos = server != null ? TimeUnit.SECONDS.toNanos(5) : Math.max(0, nextAttemptNanos - System.nanoTime());
-                scheduler.schedule(this::cycleSafely, delayNanos, TimeUnit.NANOSECONDS);
+                try { scheduler.schedule(this::cycleSafely, delayNanos, TimeUnit.NANOSECONDS); }
+                catch (RejectedExecutionException ignored) { /* close won the scheduling race */ }
             }
         }
     }
@@ -103,7 +105,14 @@ public class ActivityClient implements AutoCloseable {
         catch (Exception e) { scheduleRetry("Failed to report activity", e); }
     }
 
-    @Override public void close() { server = null; credential = null; scheduler.shutdownNow(); }
+    @Override public synchronized void close() {
+        if (closed) return;
+        closed = true;
+        started = false;
+        server = null;
+        credential = null;
+        scheduler.shutdownNow();
+    }
 
     public void setStatusListener(Consumer<String> listener) { this.statusListener = listener == null ? status -> { } : listener; }
     private void publishStatus(String status) { statusListener.accept(status); }

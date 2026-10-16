@@ -4,7 +4,6 @@ package com.veridion.shared;
 public final class RmiConfig {
     public static final int DEFAULT_PORT = 1099;
     public static final String PORT_PROPERTY = "activity.server.port";
-    public static final String OBJECT_PORT_PROPERTY = "activity.rmi.object.port";
     public static final String BINDING = "ActivityServer";
 
     private RmiConfig() { }
@@ -15,8 +14,9 @@ public final class RmiConfig {
     }
 
     public static int objectPort() {
-        int registryPort = port();
-        return configuredInt(OBJECT_PORT_PROPERTY, registryPort == 65535 ? 1 : registryPort + 1);
+        // RMI shares its transport between the registry and exported objects when
+        // they use equivalent socket factories, so one firewall port is sufficient.
+        return port();
     }
 
     private static int configuredInt(String name, int fallback) {

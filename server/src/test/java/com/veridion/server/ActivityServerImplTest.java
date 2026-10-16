@@ -5,6 +5,11 @@ import java.rmi.RemoteException;
 import java.rmi.server.UnicastRemoteObject;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.net.ServerSocket;
+import java.rmi.registry.LocateRegistry;
+import java.rmi.registry.Registry;
+import com.veridion.shared.TimeoutSslRmiClientSocketFactory;
+import javax.rmi.ssl.SslRMIServerSocketFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -16,6 +21,21 @@ class ActivityServerImplTest {
 
     @BeforeEach void setUp() throws Exception { server = new ActivityServerImpl(ENROLLMENT, Duration.ofMillis(60)); }
     @AfterEach void tearDown() throws Exception { UnicastRemoteObject.unexportObject(server, true); }
+
+    @Test void registryAndServiceCanShareOneRmiPort() throws Exception {
+        int port;
+        try (ServerSocket socket = new ServerSocket(0)) { port = socket.getLocalPort(); }
+        Registry registry = LocateRegistry.createRegistry(port, new TimeoutSslRmiClientSocketFactory(),
+                new SslRMIServerSocketFactory(null, null, false));
+        ActivityServerImpl samePortServer = new ActivityServerImpl(ENROLLMENT, port);
+        try {
+            registry.rebind("ActivityServer", samePortServer);
+            assertNotNull(registry.lookup("ActivityServer"));
+        } finally {
+            UnicastRemoteObject.unexportObject(samePortServer, true);
+            UnicastRemoteObject.unexportObject(registry, true);
+        }
+    }
 
     @Test void rejectsInvalidAndUnauthenticatedEnrollment() {
         assertThrows(RemoteException.class, () -> server.registerClient("", "host", ENROLLMENT));
