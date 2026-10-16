@@ -15,6 +15,11 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import javax.imageio.ImageIO;
+import javax.swing.JOptionPane;
+import javax.swing.SwingUtilities;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import com.veridion.shared.RemoteInputCommand;
 
 /** Client-side consent endpoint. Assistance is never accepted without an explicit local choice. */
 public final class ConsentClientHandler extends UnicastRemoteObject implements IClientHandler {
@@ -45,7 +50,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     @Override public String requestAssistance(String operatorName, String operatorCredential) throws RemoteException {
         if (!authorized(operatorCredential)) throw new RemoteException("Assistance operator is not authorized");
         if (operatorName == null || operatorName.isBlank() || operatorName.length() > 128) return "";
-        if (java.awt.GraphicsEnvironment.isHeadless() || state == SessionState.ACTIVE || !requestPending.compareAndSet(false, true)) return "";
+        if (java.awt.GraphicsEnvironment.isHeadless() || state == SessionState.ACTIVE_VIEW || state == SessionState.ACTIVE_CONTROL || !requestPending.compareAndSet(false, true)) return "";
         try {
             state = SessionState.REQUESTING_CONSENT;
             boolean accepted = consentPrompt.test(operatorName);
@@ -53,7 +58,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
                 synchronized (this) {
                     if (state == SessionState.TERMINATED) return "";
                     activeSessionId = UUID.randomUUID().toString();
-                    state = SessionState.ACTIVE;
+                    state = SessionState.ACTIVE_VIEW;
                     return activeSessionId;
                 }
             }
@@ -75,7 +80,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     @Override public synchronized void terminateSession(String sessionId, String operatorCredential) throws RemoteException {
         if (!authorized(operatorCredential)) throw new RemoteException("Assistance operator is not authorized");
         if (sessionId != null && sessionId.equals(activeSessionId)
-                && (state == SessionState.ACTIVE || state == SessionState.REQUESTING_CONSENT)) {
+                && (state == SessionState.ACTIVE_VIEW || state == SessionState.ACTIVE_CONTROL || state == SessionState.REQUESTING_CONSENT)) {
             state = SessionState.TERMINATED;
             activeSessionId = null;
         }
@@ -84,7 +89,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     @Override
     public synchronized byte[] captureScreen(String sessionId, String operatorCredential) throws RemoteException {
         if (!authorized(operatorCredential)) throw new RemoteException("Assistance operator is not authorized");
-        if (sessionId == null || !sessionId.equals(activeSessionId) || state != SessionState.ACTIVE) {
+        if (sessionId == null || !sessionId.equals(activeSessionId) || (state != SessionState.ACTIVE_VIEW && state != SessionState.ACTIVE_CONTROL)) {
             throw new RemoteException("No active assistance session authorized for screen capture");
         }
 
@@ -103,8 +108,55 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
         }
     }
 
-    public boolean isSessionActive() { return state == SessionState.ACTIVE; }
+    @Override
+    public synchronized void requestInputControl(String sessionId, String operatorCredential) throws RemoteException {
+        if (!authorized(operatorCredential)) throw new RemoteException("Assistance operator is not authorized");
+        if (sessionId == null || !sessionId.equals(activeSessionId)) throw new RemoteException("Invalid session ID");
+
+        if (state == SessionState.ACTIVE_CONTROL) return;
+        if (state != SessionState.ACTIVE_VIEW) throw new RemoteException("Client must first be in a viewing session");
+
+        final int[] choice = {JOptionPane.CLOSED_OPTION};
+        try {
+            SwingUtilities.invokeAndWait(() -> choice[0] = JOptionPane.showConfirmDialog(null,
+                "The operator is requesting remote control of your mouse and keyboard. Allow it?",
+                "Remote Input Request", JOptionPane.YES_NO_OPTION, JOptionPane.QUESTION_MESSAGE));
+        } catch (Exception e) {
+            throw new RemoteException("Unable to obtain input consent", e);
+        }
+
+        if (choice[0] == JOptionPane.YES_OPTION) {
+            state = SessionState.ACTIVE_CONTROL;
+        }
+    }
+
+    @Override
+    public synchronized void executeInput(String sessionId, String operatorCredential, RemoteInputCommand command) throws RemoteException {
+        if (command == null) throw new RemoteException("Command cannot be null");
+        command.validate();
+        if (!authorized(operatorCredential)) throw new RemoteException("Assistance operator is not authorized");
+        if (sessionId == null || !sessionId.equals(activeSessionId) || state != SessionState.ACTIVE_CONTROL) {
+            throw new RemoteException("Remote input is not authorized for this session");
+        }
+
+        try {
+            Robot robot = new Robot();
+            switch (command.type()) {
+                case MOUSE_MOVE -> robot.mouseMove(command.x(), command.y());
+                case MOUSE_PRESS -> robot.mousePress(command.button());
+                case MOUSE_RELEASE -> robot.mouseRelease(command.button());
+                case MOUSE_SCROLL -> robot.mouseWheel(command.amount());
+                case KEY_PRESS -> robot.keyPress(command.keyCode());
+                case KEY_RELEASE -> robot.keyRelease(command.keyCode());
+                default -> throw new RemoteException("Unsupported command type");
+            }
+        } catch (java.awt.AWTException e) {
+            throw new RemoteException("Input execution failed: " + e.getMessage());
+        }
+    }
+
+    public boolean isSessionActive() { return state == SessionState.ACTIVE_VIEW || state == SessionState.ACTIVE_CONTROL; }
     public String getActiveSessionId() { return activeSessionId; }
     public SessionState getState() { return state; }
-    public enum SessionState { IDLE, REQUESTING_CONSENT, ACTIVE, TERMINATED }
+    public enum SessionState { IDLE, REQUESTING_CONSENT, ACTIVE_VIEW, ACTIVE_CONTROL, TERMINATED }
 }
