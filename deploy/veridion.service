@@ -1,0 +1,22 @@
+[Unit]
+Description=Veridion Activity Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=veridion
+Group=veridion
+WorkingDirectory=/opt/veridion
+EnvironmentFile=/etc/veridion/server.env
+ExecStart=/usr/bin/java -Dactivity.server.advertised-host=${ADVERTISED_HOST} -Dactivity.enrollment.file=${ENROLLMENT_FILE} -Djavax.net.ssl.keyStore=${KEYSTORE_PATH} -Djavax.net.ssl.keyStorePassword=${KEYSTORE_PASSWORD} -Djavax.net.ssl.keyStoreType=PKCS12 -Dactivity.dashboard.disabled=true -cp /opt/veridion/server.jar:/opt/veridion/shared.jar com.veridion.server.ServerMain --no-dashboard
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/veridion
+
+[Install]
+WantedBy=multi-user.target

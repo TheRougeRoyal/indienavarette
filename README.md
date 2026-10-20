@@ -20,6 +20,7 @@ The native build is required before Maven verification because `NativeWindowTrac
 
 ```sh
 java -Dactivity.enrollment.file=/secure/path/enrollments.properties \
+  -Dactivity.server.advertised-host=server.example.org \
   -Djavax.net.ssl.keyStore=/secure/path/server.p12 \
   -Djavax.net.ssl.keyStorePassword="$SERVER_KEYSTORE_PASSWORD" \
   -Djavax.net.ssl.keyStoreType=PKCS12 \
@@ -37,6 +38,33 @@ java -Dactivity.client.id=client-01 \
 ```
 
 Provide the password and token variables through a secret manager or another protected mechanism rather than shell history. Configure the server certificate SAN for the host passed to the client.
+
+The server requires `activity.server.advertised-host` (or the standard
+`java.rmi.server.hostname`) so the exported RMI stub advertises an address the
+client can reach. The registry and service share the configured port (1099 by
+default). `ServerMain --no-dashboard` or
+`-Dactivity.dashboard.disabled=true` keeps it headless. The Swing dashboard
+requires a graphical session and is not a browser dashboard. Open TCP 1099 only
+to trusted client networks, preferably through WireGuard or Tailscale.
+
+Before creating the registry, the server installs a bounded serialization
+filter that permits the service DTOs and required Java/RMI types, with limits on
+depth, references, arrays, and bytes. Add future serialized API types to this
+allowlist deliberately.
+
+The native client bundle is platform-specific: `libveridion_native.so` is
+Linux-only and requires an X11 desktop session. Windows and macOS need separate
+JNI builds. A headless client exits without collecting activity.
+
+`deploy/veridion.service` is a headless systemd unit template. Install the
+server and shared JARs as `/opt/veridion/server.jar` and
+`/opt/veridion/shared.jar`, create an `EnvironmentFile` at
+`/etc/veridion/server.env` containing `ADVERTISED_HOST`, `ENROLLMENT_FILE`,
+`KEYSTORE_PATH`, and `KEYSTORE_PASSWORD`, and grant the `veridion` service user
+read access to the enrollment and keystore files. Keep that environment file
+owner-readable only. After installing the unit, run `systemctl daemon-reload`
+and enable/start `veridion.service`. Restrict the RMI firewall rule to the
+private VPN interface/network; the service uses TCP 1099 by default.
 
 ## Secure RMI configuration
 
