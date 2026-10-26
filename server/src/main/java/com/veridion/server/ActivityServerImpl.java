@@ -38,6 +38,7 @@ public class ActivityServerImpl extends UnicastRemoteObject implements IActivity
     ActivityServerImpl(String enrollmentToken, Duration heartbeatTimeout) throws RemoteException { this(Map.of("c1", enrollmentToken), 0, heartbeatTimeout); }
 
     protected ActivityServerImpl(Map<String, String> enrollmentTokens, int objectPort, Duration heartbeatTimeout) throws RemoteException {
+        // ponytail: use provided port instead of 0 for firewall friendliness
         super(objectPort, new TimeoutSslRmiClientSocketFactory(), new SslRMIServerSocketFactory(null, null, false));
         if (enrollmentTokens == null || enrollmentTokens.isEmpty()) throw new RemoteException("No client enrollment credentials configured");
         if (heartbeatTimeout == null || heartbeatTimeout.isZero() || heartbeatTimeout.isNegative()) throw new RemoteException("Heartbeat timeout must be positive");
