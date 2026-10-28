@@ -1,5 +1,5 @@
 #if defined(__has_include)
-#  if __has_include(<jni.h>)
+#  if __has_include(<jni.h>)    
 #    include <jni.h>
 #  elif __has_include("/usr/lib/jvm/default-java/include/jni.h")
 #    include "/usr/lib/jvm/default-java/include/jni.h"
@@ -27,7 +27,7 @@ static void copy_text(char *dst, size_t cap, const unsigned char *src, unsigned 
     memcpy(dst, src, len);
     dst[len] = '\0';
 }
-
+ 
 static jstring new_utf8_string(JNIEnv *env, const char *src) {
     size_t bytes = strlen(src), i = 0, units = 0;
     jchar *utf16 = calloc(bytes + 1, sizeof(jchar));
@@ -36,7 +36,8 @@ static jstring new_utf8_string(JNIEnv *env, const char *src) {
         unsigned char c = (unsigned char)src[i++]; unsigned int cp;
         if (c < 0x80) cp = c;
         else if ((c & 0xe0) == 0xc0 && i < bytes) cp = ((c & 0x1f) << 6) | ((unsigned char)src[i++] & 0x3f);
-        else if ((c & 0xf0) == 0xe0 && i + 1 < bytes) { cp = ((c & 0x0f) << 12) | (((unsigned char)src[i] & 0x3f) << 6) | ((unsigned char)src[i+1] & 0x3f); i += 2; }
+        else if ((c & 0xf0) == 0xe0 && i + 1 < bytes) { cp = ((c
+              & 0x0f) << 12) | (((unsigned char)src[i] & 0x3f) << 6) | ((unsigned char)src[i+1] & 0x3f); i += 2; }
         else if ((c & 0xf8) == 0xf0 && i + 2 < bytes) { cp = ((c & 7) << 18) | (((unsigned char)src[i] & 0x3f) << 12) | (((unsigned char)src[i+1] & 0x3f) << 6) | ((unsigned char)src[i+2] & 0x3f); i += 3; }
         else cp = 0xfffd;
         if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) cp = 0xfffd;
