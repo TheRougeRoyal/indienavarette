@@ -162,7 +162,9 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
      *
      * @param operatorName       display name shown in the consent dialog (1–128 characters)
      * @param operatorCredential shared secret matching the configured operator token
-     * @return a UUID session identifier, or {@code ""} if consent was denied / session already active
+     * @return a UUID session identifier and enters {@link SessionState#ACTIVE_VIEW} when accepted;
+     *         an explicit denial returns {@code ""} and leaves the state {@link SessionState#IDLE}.
+     *         Headless execution or an already active session also returns {@code ""}.
      * @throws RemoteException if the credential is invalid or the consent dialog fails
      */
     @Override

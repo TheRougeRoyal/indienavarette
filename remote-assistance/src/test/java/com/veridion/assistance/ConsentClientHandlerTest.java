@@ -4,6 +4,7 @@ import java.rmi.server.UnicastRemoteObject;
 import java.rmi.RemoteException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.function.Predicate;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
@@ -39,7 +40,9 @@ class ConsentClientHandlerTest {
         String sessionId = handler.requestAssistance("Support operator", TOKEN);
         assertNotNull(sessionId);
         assertFalse(sessionId.isEmpty());
+        assertEquals(sessionId, UUID.fromString(sessionId).toString());
         assertTrue(handler.isSessionActive());
+        assertEquals(ConsentClientHandler.SessionState.ACTIVE_VIEW, handler.getState());
         assertEquals("", handler.requestAssistance("Another operator", TOKEN));
         assertThrows(java.rmi.RemoteException.class, () -> handler.terminateSession(sessionId, "wrong"));
         handler.terminateSession(sessionId, TOKEN);
@@ -55,5 +58,7 @@ class ConsentClientHandlerTest {
         assertFalse(handler.isSessionActive());
         assertNull(handler.getActiveSessionId());
         assertEquals(ConsentClientHandler.SessionState.IDLE, handler.getState());
+        assertFalse(handler.getAuditLog().getEntries().stream()
+                .anyMatch(entry -> entry.action().equals("SESSION_STARTED")));
     }
 }
