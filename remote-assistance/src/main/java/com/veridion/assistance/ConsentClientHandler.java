@@ -458,6 +458,8 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
      */
     public synchronized Set<Integer> getPressedKeys() { return Set.copyOf(pressedKeys); }
 
+    synchronized long getLastSequenceNumber() { return lastSequenceNumber; }
+
     /**
      * Returns the timestamp (epoch ms) at which the current session was created, or {@code -1}
      * if no session is active. Exposed for testing session-expiry behaviour.

@@ -92,6 +92,18 @@ class RemoteInputTest {
         return created;
     }
 
+    private ConsentClientHandler newTestInputHandler(AtomicInteger screenLookups, AtomicInteger actions)
+            throws RemoteException {
+        ConsentClientHandler created = new ConsentClientHandler(
+                operator -> true, operator -> true, VALID_TOKEN, System::currentTimeMillis, 60_000,
+                () -> {
+                    screenLookups.incrementAndGet();
+                    return TEST_SCREEN;
+                }, command -> actions.incrementAndGet());
+        handlers.add(created);
+        return created;
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Baseline consent / state-machine tests (9 pre-existing, preserved)
     // ─────────────────────────────────────────────────────────────────────────
@@ -171,7 +183,61 @@ class RemoteInputTest {
     }
 
     @Test
-    void captureScreenChecksCredentialBeforeSessionOrDisplay() {
+    void executeInputChecksCredentialBeforeInvalidCoordinateValidation() {
+        RemoteInputCommand invalid = new RemoteInputCommand(CommandType.MOUSE_MOVE, -1, 100, 0, 0, 0, 1);
+
+        RemoteException error = assertThrows(RemoteException.class,
+                () -> handler.executeInput("invalid-session", "wrong-token", invalid));
+        assertEquals("Assistance operator is not authorized", error.getMessage());
+    }
+
+    @Test
+    void staleSequenceIsRejectedBeforeScreenValidationAndDoesNotAdvanceSequence() throws Exception {
+        AtomicInteger screenLookups = new AtomicInteger();
+        AtomicInteger actions = new AtomicInteger();
+        ConsentClientHandler inputHandler = newTestInputHandler(screenLookups, actions);
+        String sessionId = inputHandler.requestAssistance("Operator", VALID_TOKEN);
+        inputHandler.requestInputControl(sessionId, VALID_TOKEN);
+
+        inputHandler.executeInput(sessionId, VALID_TOKEN,
+                new RemoteInputCommand(CommandType.MOUSE_MOVE, 10, 10, 0, 0, 0, 10));
+        assertEquals(1, screenLookups.get());
+        assertEquals(1, actions.get());
+
+        RemoteInputCommand staleAndInvalid =
+                new RemoteInputCommand(CommandType.MOUSE_MOVE, -1, 10, 0, 0, 0, 9);
+        RemoteException error = assertThrows(RemoteException.class,
+                () -> inputHandler.executeInput(sessionId, VALID_TOKEN, staleAndInvalid));
+
+        assertTrue(error.getMessage().contains("Duplicate or stale command sequence number"));
+        assertEquals(1, screenLookups.get(), "stale command must not reach screen validation");
+        assertEquals(10, inputHandler.getLastSequenceNumber());
+    }
+
+    @Test
+    void rejectedCommandDoesNotConsumeSequenceAndNextValidSequenceIsAccepted() throws Exception {
+        AtomicInteger screenLookups = new AtomicInteger();
+        AtomicInteger actions = new AtomicInteger();
+        ConsentClientHandler inputHandler = newTestInputHandler(screenLookups, actions);
+        String sessionId = inputHandler.requestAssistance("Operator", VALID_TOKEN);
+        inputHandler.requestInputControl(sessionId, VALID_TOKEN);
+        inputHandler.executeInput(sessionId, VALID_TOKEN,
+                new RemoteInputCommand(CommandType.MOUSE_MOVE, 10, 10, 0, 0, 0, 20));
+
+        RemoteInputCommand invalid = new RemoteInputCommand(CommandType.MOUSE_MOVE, -1, 10, 0, 0, 0, 21);
+        RemoteException error = assertThrows(RemoteException.class,
+                () -> inputHandler.executeInput(sessionId, VALID_TOKEN, invalid));
+        assertTrue(error.getMessage().contains("Invalid command"));
+        assertEquals(20, inputHandler.getLastSequenceNumber());
+
+        assertDoesNotThrow(() -> inputHandler.executeInput(sessionId, VALID_TOKEN,
+                new RemoteInputCommand(CommandType.MOUSE_MOVE, 11, 10, 0, 0, 0, 21)));
+        assertEquals(21, inputHandler.getLastSequenceNumber());
+        assertEquals(2, actions.get(), "only the initial and subsequent valid commands execute");
+    }
+
+    @Test
+    void captureScreenChecksCredentialBeforeSessionOrDisplay() throws RemoteException {
         AtomicInteger screenLookups = new AtomicInteger();
         ConsentClientHandler observedHandler = newScreenObservedHandler(screenLookups);
 
