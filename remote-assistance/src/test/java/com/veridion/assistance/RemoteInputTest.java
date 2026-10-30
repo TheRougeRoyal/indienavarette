@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Predicate;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -76,6 +77,17 @@ class RemoteInputTest {
         ConsentClientHandler created = new ConsentClientHandler(
                 operator -> true, operator -> false, VALID_TOKEN, System::currentTimeMillis, 60_000,
                 () -> { throw new java.awt.HeadlessException(); }, command -> { });
+        handlers.add(created);
+        return created;
+    }
+
+    private ConsentClientHandler newScreenObservedHandler(AtomicInteger lookups) throws RemoteException {
+        ConsentClientHandler created = new ConsentClientHandler(
+                operator -> true, operator -> false, VALID_TOKEN, System::currentTimeMillis, 60_000,
+                () -> {
+                    lookups.incrementAndGet();
+                    throw new java.awt.HeadlessException();
+                }, command -> { });
         handlers.add(created);
         return created;
     }
@@ -156,6 +168,33 @@ class RemoteInputTest {
         RemoteInputCommand cmd = new RemoteInputCommand(CommandType.MOUSE_MOVE, 100, 100, 0, 0, 0, 1);
         assertThrows(RemoteException.class,
                 () -> handler.executeInput(sessionId, "wrong-token", cmd));
+    }
+
+    @Test
+    void captureScreenChecksCredentialBeforeSessionOrDisplay() {
+        AtomicInteger screenLookups = new AtomicInteger();
+        ConsentClientHandler observedHandler = newScreenObservedHandler(screenLookups);
+
+        RemoteException error = assertThrows(RemoteException.class,
+                () -> observedHandler.captureScreen("invalid-session", "wrong-token"));
+        assertEquals("Assistance operator is not authorized", error.getMessage());
+        assertEquals(0, screenLookups.get());
+    }
+
+    @Test
+    void requestInputControlChecksCredentialBeforeSessionState() {
+        RemoteException error = assertThrows(RemoteException.class,
+                () -> handler.requestInputControl("invalid-session", "wrong-token"));
+        assertEquals("Assistance operator is not authorized", error.getMessage());
+        assertEquals(ConsentClientHandler.SessionState.IDLE, handler.getState());
+    }
+
+    @Test
+    void terminateSessionChecksCredentialBeforeSessionState() {
+        RemoteException error = assertThrows(RemoteException.class,
+                () -> handler.terminateSession("invalid-session", "wrong-token"));
+        assertEquals("Assistance operator is not authorized", error.getMessage());
+        assertEquals(ConsentClientHandler.SessionState.IDLE, handler.getState());
     }
 
     @Test
