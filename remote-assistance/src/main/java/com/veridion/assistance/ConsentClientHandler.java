@@ -55,6 +55,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     private final AtomicBoolean requestPending = new AtomicBoolean();
     private volatile SessionState state = SessionState.IDLE;
     private volatile String activeSessionId;
+    private String activeOperatorName;
     private volatile long sessionCreatedAt = -1;
 
     private final Predicate<String> consentPrompt;
@@ -166,6 +167,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
         releaseAllKeys();
         state = SessionState.TERMINATED;
         activeSessionId = null;
+        activeOperatorName = null;
         sessionCreatedAt = -1;
         lastSequenceNumber = -1;
     }
@@ -190,7 +192,8 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
         try {
             synchronized (this) {
                 checkSessionExpiry();
-                if (state == SessionState.ACTIVE_VIEW || state == SessionState.ACTIVE_CONTROL) return "";
+                if (state == SessionState.ACTIVE_VIEW || state == SessionState.ACTIVE_CONTROL
+                        || state == SessionState.REQUESTING_INPUT_CONSENT) return "";
                 state = SessionState.REQUESTING_CONSENT;
             }
             boolean accepted = consentPrompt.test(operatorName);
@@ -198,6 +201,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
                 synchronized (this) {
                     if (state == SessionState.TERMINATED) return "";
                     activeSessionId = UUID.randomUUID().toString();
+                    activeOperatorName = operatorName;
                     state = SessionState.ACTIVE_VIEW;
                     sessionCreatedAt = currentTimeMillis.getAsLong();
                     lastSequenceNumber = -1;
@@ -230,7 +234,8 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
         if (sessionId != null && sessionId.equals(activeSessionId)
                 && (state == SessionState.ACTIVE_VIEW
                         || state == SessionState.ACTIVE_CONTROL
-                        || state == SessionState.REQUESTING_CONSENT)) {
+                        || state == SessionState.REQUESTING_CONSENT
+                        || state == SessionState.REQUESTING_INPUT_CONSENT)) {
             terminateSessionInternal();
         }
     }
@@ -248,11 +253,12 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
         if (!authorized(operatorCredential)) throw new RemoteException("Assistance operator is not authorized");
         checkSessionExpiry();
         if (sessionId == null || !sessionId.equals(activeSessionId)
-                || (state != SessionState.ACTIVE_VIEW && state != SessionState.ACTIVE_CONTROL)) {
+                || (state != SessionState.ACTIVE_VIEW && state != SessionState.REQUESTING_INPUT_CONSENT
+                        && state != SessionState.ACTIVE_CONTROL)) {
             throw new RemoteException("No active assistance session authorized for screen capture");
         }
 
-        auditLog.log("operator", "SCREEN_CAPTURE", "Session: " + sessionId);
+        auditLog.log(activeOperatorName, "SCREEN_CAPTURE", "Session: " + sessionId);
 
         try {
             java.awt.Dimension screenSize = screenSizeSupplier.get();
@@ -271,29 +277,46 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     }
 
     /**
-     * Upgrades the session from view-only to full input control. A second consent dialog is shown
-     * to the local user.
+     * Upgrades the session from view-only to full input control. The second consent dialog runs
+     * without holding the session lock, so the operator can terminate the session while the local
+     * user decides.
      *
      * @param sessionId          active session UUID
      * @param operatorCredential shared secret
-     * @throws RemoteException if not authorized, session is invalid, or already in wrong state
+     * @throws RemoteException if not authorized, the session is invalid or terminated while
+     *                         consent is pending, or the session is in the wrong state
      */
     @Override
-    public synchronized void requestInputControl(String sessionId, String operatorCredential) throws RemoteException {
+    public void requestInputControl(String sessionId, String operatorCredential) throws RemoteException {
         if (!authorized(operatorCredential)) throw new RemoteException("Assistance operator is not authorized");
-        checkSessionExpiry();
-        if (sessionId == null || !sessionId.equals(activeSessionId)) throw new RemoteException("Invalid session ID");
-
-        if (state == SessionState.ACTIVE_CONTROL) return;
-        if (state != SessionState.ACTIVE_VIEW) throw new RemoteException("Client must first be in a viewing session");
+        synchronized (this) {
+            checkSessionExpiry();
+            if (sessionId == null || !sessionId.equals(activeSessionId))
+                throw new RemoteException("Invalid session ID");
+            if (state == SessionState.ACTIVE_CONTROL) return;
+            if (state != SessionState.ACTIVE_VIEW)
+                throw new RemoteException("Client must first be in a viewing session");
+            state = SessionState.REQUESTING_INPUT_CONSENT;
+        }
 
         final boolean accepted;
         try {
             accepted = inputConsentPrompt.test("Remote input control request");
         } catch (RuntimeException e) {
+            synchronized (this) {
+                if (state == SessionState.REQUESTING_INPUT_CONSENT
+                        && sessionId.equals(activeSessionId)) state = SessionState.ACTIVE_VIEW;
+            }
             throw new RemoteException("Unable to obtain input consent", e);
         }
-        if (accepted) state = SessionState.ACTIVE_CONTROL;
+        synchronized (this) {
+            checkSessionExpiry();
+            if (state != SessionState.REQUESTING_INPUT_CONSENT
+                    || !sessionId.equals(activeSessionId)) {
+                throw new RemoteException("Session ended while input consent was pending");
+            }
+            state = accepted ? SessionState.ACTIVE_CONTROL : SessionState.ACTIVE_VIEW;
+        }
     }
 
     /**
@@ -349,7 +372,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
         // Consume the sequence only after the entire command has passed validation.
         lastSequenceNumber = command.sequenceNumber();
 
-        auditLog.log("operator", "INPUT_EXECUTED",
+        auditLog.log(activeOperatorName, "INPUT_EXECUTED",
                 "Type: " + command.type() + " Seq: " + command.sequenceNumber());
 
         inputExecutor.execute(command);
@@ -432,7 +455,8 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     /** @return {@code true} if a session is currently in VIEW or CONTROL state */
     public synchronized boolean isSessionActive() {
         expireBeforeStateRead();
-        return state == SessionState.ACTIVE_VIEW || state == SessionState.ACTIVE_CONTROL;
+        return state == SessionState.ACTIVE_VIEW || state == SessionState.REQUESTING_INPUT_CONSENT
+                || state == SessionState.ACTIVE_CONTROL;
     }
 
     /** @return the UUID of the currently active session, or {@code null} if none */
@@ -479,6 +503,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     public enum SessionState {
         IDLE,
         REQUESTING_CONSENT,
+        REQUESTING_INPUT_CONSENT,
         ACTIVE_VIEW,
         ACTIVE_CONTROL,
         TERMINATED

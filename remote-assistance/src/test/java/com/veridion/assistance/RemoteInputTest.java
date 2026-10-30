@@ -11,6 +11,9 @@ import java.util.List;
 import java.util.function.Predicate;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -148,6 +151,50 @@ class RemoteInputTest {
         } finally {
             UnicastRemoteObject.unexportObject(viewOnlyHandler, true);
         }
+    }
+
+    @Test
+    void terminationCanEndSessionWhileInputConsentPromptIsOpen() throws Exception {
+        CountDownLatch promptEntered = new CountDownLatch(1);
+        CountDownLatch releasePrompt = new CountDownLatch(1);
+        ConsentClientHandler pendingHandler = newHandler(operator -> true, operator -> {
+            promptEntered.countDown();
+            try {
+                if (!releasePrompt.await(5, TimeUnit.SECONDS))
+                    throw new IllegalStateException("test did not release input prompt");
+                return true;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            }
+        });
+        String sessionId = pendingHandler.requestAssistance("Operator", VALID_TOKEN);
+
+        CompletableFuture<RemoteException> inputRequest = CompletableFuture.supplyAsync(() -> {
+            try {
+                pendingHandler.requestInputControl(sessionId, VALID_TOKEN);
+                return null;
+            } catch (RemoteException e) {
+                return e;
+            }
+        });
+        assertTrue(promptEntered.await(2, TimeUnit.SECONDS), "input consent prompt should start");
+
+        CompletableFuture<Void> termination = CompletableFuture.runAsync(() -> {
+            try { pendingHandler.terminateSession(sessionId, VALID_TOKEN); }
+            catch (RemoteException e) { throw new IllegalStateException(e); }
+        });
+        try {
+            termination.get(2, TimeUnit.SECONDS);
+            assertEquals(ConsentClientHandler.SessionState.TERMINATED, pendingHandler.getState());
+        } finally {
+            releasePrompt.countDown();
+        }
+
+        RemoteException result = inputRequest.get(2, TimeUnit.SECONDS);
+        assertNotNull(result, "a terminated session must not be upgraded after consent returns");
+        assertTrue(result.getMessage().contains("Session ended while input consent was pending"));
+        assertEquals(ConsentClientHandler.SessionState.TERMINATED, pendingHandler.getState());
     }
 
     @Test
@@ -509,12 +556,13 @@ class RemoteInputTest {
      */
     @Test
     void logsScreenCaptureAction() throws RemoteException {
-        String sessionId = handler.requestAssistance("Operator", VALID_TOKEN);
+        String sessionId = handler.requestAssistance("alice", VALID_TOKEN);
         handler.captureScreen(sessionId, VALID_TOKEN);
 
         var entries = handler.getAuditLog().getEntries();
-        assertTrue(entries.stream().anyMatch(e -> e.action().equals("SCREEN_CAPTURE")),
-                "Audit log must contain a SCREEN_CAPTURE entry");
+        assertTrue(entries.stream().anyMatch(e -> e.action().equals("SCREEN_CAPTURE")
+                        && e.operatorId().equals("alice")),
+                "SCREEN_CAPTURE must be attributed to the consenting operator");
     }
 
     /**
@@ -524,15 +572,16 @@ class RemoteInputTest {
     void logsInputExecutedAction() throws RemoteException {
         ConsentClientHandler autoHandler = newHandler(op -> true, op -> true);
         try {
-            String sId = autoHandler.requestAssistance("Operator", VALID_TOKEN);
+            String sId = autoHandler.requestAssistance("bob", VALID_TOKEN);
             autoHandler.requestInputControl(sId, VALID_TOKEN);
 
             RemoteInputCommand cmd = new RemoteInputCommand(CommandType.MOUSE_MOVE, 100, 100, 0, 0, 0, 1);
             autoHandler.executeInput(sId, VALID_TOKEN, cmd);
 
             var entries = autoHandler.getAuditLog().getEntries();
-            assertTrue(entries.stream().anyMatch(e -> e.action().equals("INPUT_EXECUTED")),
-                    "Audit log must contain an INPUT_EXECUTED entry");
+            assertTrue(entries.stream().anyMatch(e -> e.action().equals("INPUT_EXECUTED")
+                            && e.operatorId().equals("bob")),
+                    "INPUT_EXECUTED must be attributed to the consenting operator");
         } finally {
             UnicastRemoteObject.unexportObject(autoHandler, true);
         }
