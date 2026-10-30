@@ -4,7 +4,6 @@ import com.veridion.shared.RemoteInputCommand;
 import com.veridion.shared.RemoteInputCommand.CommandType;
 import org.junit.jupiter.api.*;
 import java.awt.Dimension;
-import java.awt.Toolkit;
 import java.rmi.RemoteException;
 import java.rmi.server.UnicastRemoteObject;
 import static org.junit.jupiter.api.Assertions.*;
@@ -25,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * unexported in {@code @AfterEach} to avoid RMI registry leaks between tests.
  */
 class RemoteInputTest {
+    private static final Dimension TEST_SCREEN = new Dimension(1920, 1080);
 
     /** Shared token long enough to satisfy the ≥32-char requirement. */
     private static final String VALID_TOKEN =
@@ -92,25 +92,25 @@ class RemoteInputTest {
     @Test
     void testInvalidCoordinatesRejected() {
         RemoteInputCommand badCmd = new RemoteInputCommand(CommandType.MOUSE_MOVE, -1, 100, 0, 0, 0, 1);
-        assertThrows(IllegalArgumentException.class, badCmd::validate);
+        assertThrows(IllegalArgumentException.class, () -> badCmd.validate(TEST_SCREEN));
     }
 
     @Test
     void testInvalidMouseButtonRejected() {
         RemoteInputCommand badCmd = new RemoteInputCommand(CommandType.MOUSE_PRESS, 100, 100, 4, 0, 0, 1);
-        assertThrows(IllegalArgumentException.class, badCmd::validate);
+        assertThrows(IllegalArgumentException.class, () -> badCmd.validate(TEST_SCREEN));
     }
 
     @Test
     void testInvalidScrollAmountRejected() {
         RemoteInputCommand badCmd = new RemoteInputCommand(CommandType.MOUSE_SCROLL, 0, 0, 0, 0, 11, 1);
-        assertThrows(IllegalArgumentException.class, badCmd::validate);
+        assertThrows(IllegalArgumentException.class, () -> badCmd.validate(TEST_SCREEN));
     }
 
     @Test
     void testInvalidKeyCodeRejected() {
         RemoteInputCommand badCmd = new RemoteInputCommand(CommandType.KEY_PRESS, 0, 0, 0, 256, 0, 1);
-        assertThrows(IllegalArgumentException.class, badCmd::validate);
+        assertThrows(IllegalArgumentException.class, () -> badCmd.validate(TEST_SCREEN));
     }
 
     @Test
@@ -146,7 +146,7 @@ class RemoteInputTest {
     @Test
     void validatesOriginCoordinatesAreAccepted() {
         RemoteInputCommand cmd = new RemoteInputCommand(CommandType.MOUSE_MOVE, 0, 0, 0, 0, 0, 1);
-        assertDoesNotThrow(cmd::validate);
+        assertDoesNotThrow(() -> cmd.validate(TEST_SCREEN));
     }
 
     /**
@@ -154,20 +154,20 @@ class RemoteInputTest {
      */
     @Test
     void rejectsMouseCoordinatesOutsideScreen() {
-        Dimension screen = Toolkit.getDefaultToolkit().getScreenSize();
+        Dimension screen = TEST_SCREEN;
         RemoteInputCommand outX = new RemoteInputCommand(
                 CommandType.MOUSE_MOVE, screen.width, 0, 0, 0, 0, 1);
-        assertThrows(IllegalArgumentException.class, outX::validate,
+        assertThrows(IllegalArgumentException.class, () -> outX.validate(screen),
                 "x == screen.width should be rejected");
 
         RemoteInputCommand outY = new RemoteInputCommand(
                 CommandType.MOUSE_MOVE, 0, screen.height, 0, 0, 0, 1);
-        assertThrows(IllegalArgumentException.class, outY::validate,
+        assertThrows(IllegalArgumentException.class, () -> outY.validate(screen),
                 "y == screen.height should be rejected");
 
         RemoteInputCommand farOut = new RemoteInputCommand(
                 CommandType.MOUSE_MOVE, screen.width + 100, screen.height + 100, 0, 0, 0, 1);
-        assertThrows(IllegalArgumentException.class, farOut::validate,
+        assertThrows(IllegalArgumentException.class, () -> farOut.validate(screen),
                 "Wildly out-of-bounds coordinates should be rejected");
     }
 
@@ -175,14 +175,14 @@ class RemoteInputTest {
     @Test
     void rejectsMouseButtonZero() {
         RemoteInputCommand cmd = new RemoteInputCommand(CommandType.MOUSE_PRESS, 100, 100, 0, 0, 0, 1);
-        assertThrows(IllegalArgumentException.class, cmd::validate);
+        assertThrows(IllegalArgumentException.class, () -> cmd.validate(TEST_SCREEN));
     }
 
     /** Mouse button 4 is outside the 1-3 range. */
     @Test
     void rejectsMouseButtonFour() {
         RemoteInputCommand cmd = new RemoteInputCommand(CommandType.MOUSE_PRESS, 100, 100, 4, 0, 0, 1);
-        assertThrows(IllegalArgumentException.class, cmd::validate);
+        assertThrows(IllegalArgumentException.class, () -> cmd.validate(TEST_SCREEN));
     }
 
     /** Scroll amount -11 is below the -10 lower bound. */
@@ -196,28 +196,28 @@ class RemoteInputTest {
     @Test
     void acceptsScrollAmountAtUpperBound() {
         RemoteInputCommand cmd = new RemoteInputCommand(CommandType.MOUSE_SCROLL, 0, 0, 0, 0, 10, 1);
-        assertDoesNotThrow(cmd::validate);
+        assertDoesNotThrow(() -> cmd.validate(TEST_SCREEN));
     }
 
     /** Key code 255 is at the upper bound and must be accepted. */
     @Test
     void acceptsKeyCodeAtUpperBound() {
         RemoteInputCommand cmd = new RemoteInputCommand(CommandType.KEY_PRESS, 0, 0, 0, 255, 0, 1);
-        assertDoesNotThrow(cmd::validate);
+        assertDoesNotThrow(() -> cmd.validate(TEST_SCREEN));
     }
 
     /** Key code 256 exceeds the X11 range of 0-255. */
     @Test
     void rejectsKeyCodeAbove255() {
         RemoteInputCommand cmd = new RemoteInputCommand(CommandType.KEY_PRESS, 0, 0, 0, 256, 0, 1);
-        assertThrows(IllegalArgumentException.class, cmd::validate);
+        assertThrows(IllegalArgumentException.class, () -> cmd.validate(TEST_SCREEN));
     }
 
     /** Negative key code is below the 0-255 range. */
     @Test
     void rejectsNegativeKeyCode() {
         RemoteInputCommand cmd = new RemoteInputCommand(CommandType.KEY_RELEASE, 0, 0, 0, -1, 0, 1);
-        assertThrows(IllegalArgumentException.class, cmd::validate);
+        assertThrows(IllegalArgumentException.class, () -> cmd.validate(TEST_SCREEN));
     }
 
     // ─────────────────────────────────────────────────────────────────────────

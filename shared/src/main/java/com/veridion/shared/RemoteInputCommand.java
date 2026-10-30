@@ -10,7 +10,7 @@ import java.io.Serializable;
  *   <li>{@code type} must not be {@code null}.</li>
  *   <li>For {@code MOUSE_MOVE}, {@code MOUSE_PRESS}, {@code MOUSE_RELEASE}: coordinates
  *       ({@code x}, {@code y}) must be non-negative and within the primary screen bounds
- *       (checked via {@link java.awt.Toolkit#getDefaultToolkit()}).</li>
+ *       within the supplied primary screen bounds.</li>
  *   <li>For {@code MOUSE_PRESS}, {@code MOUSE_RELEASE}: {@code button} must be 1–3
  *       (left / middle / right as defined by {@link java.awt.event.InputEvent}).</li>
  *   <li>For {@code MOUSE_SCROLL}: {@code amount} must be in the range [-10, +10].</li>
@@ -57,12 +57,25 @@ public record RemoteInputCommand(
      * @throws IllegalArgumentException if any field violates its constraint
      */
     public void validate() {
+        java.awt.Dimension screenSize = null;
+        if (usesScreenCoordinates()) {
+            try {
+                screenSize = java.awt.Toolkit.getDefaultToolkit().getScreenSize();
+            } catch (java.awt.HeadlessException e) {
+                throw new IllegalStateException("Screen coordinates cannot be validated without a display", e);
+            }
+        }
+        validate(screenSize);
+    }
+
+    /** Validates this command using the primary screen size supplied by the caller. */
+    public void validate(java.awt.Dimension screenSize) {
         if (type == null) throw new IllegalArgumentException("Command type required");
 
         switch (type) {
-            case MOUSE_MOVE -> validateCoordinates();
+            case MOUSE_MOVE -> validateCoordinates(screenSize);
             case MOUSE_PRESS, MOUSE_RELEASE -> {
-                validateCoordinates();
+                validateCoordinates(screenSize);
                 if (button < 1 || button > 3)
                     throw new IllegalArgumentException(
                             "Button must be 1-3 (got " + button + ")");
@@ -80,17 +93,21 @@ public record RemoteInputCommand(
         }
     }
 
+    private boolean usesScreenCoordinates() {
+        return type == CommandType.MOUSE_MOVE || type == CommandType.MOUSE_PRESS || type == CommandType.MOUSE_RELEASE;
+    }
+
     /**
      * Validates that {@code x} and {@code y} are non-negative and fall within the bounds of the
      * primary display.
      *
      * @throws IllegalArgumentException if the coordinates are out of range
      */
-    private void validateCoordinates() {
+    private void validateCoordinates(java.awt.Dimension screen) {
         if (x < 0 || y < 0)
             throw new IllegalArgumentException(
                     "Coordinates must be non-negative (got x=" + x + ", y=" + y + ")");
-        java.awt.Dimension screen = java.awt.Toolkit.getDefaultToolkit().getScreenSize();
+        if (screen == null) throw new IllegalArgumentException("Screen size is required to validate coordinates");
         if (x >= screen.width || y >= screen.height)
             throw new IllegalArgumentException(
                     "Coordinates out of screen bounds (" + x + ", " + y

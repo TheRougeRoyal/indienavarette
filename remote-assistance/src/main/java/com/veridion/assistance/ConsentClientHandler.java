@@ -286,9 +286,13 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
                                           RemoteInputCommand command) throws RemoteException {
         if (command == null) throw new RemoteException("Command cannot be null");
 
-        // Issue 1: full input validation (bounds, button codes, key codes, scroll amounts)
+        // Validate bounds and values before any Robot action. Convert a headless display error
+        // into a clear RMI error instead of leaking AWT's HeadlessException.
         try {
-            command.validate();
+            java.awt.Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
+            command.validate(screenSize);
+        } catch (java.awt.HeadlessException e) {
+            throw new RemoteException("Input validation requires an available display", e);
         } catch (IllegalArgumentException e) {
             throw new RemoteException("Invalid command: " + e.getMessage(), e);
         }
