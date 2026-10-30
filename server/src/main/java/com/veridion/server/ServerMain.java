@@ -16,6 +16,7 @@ public class ServerMain {
             configureRmiEndpoint();
             installSerializationFilter();
             ActivityServerImpl server = new ActivityServerImpl();
+            Runtime.getRuntime().addShutdownHook(new Thread(server::close, "activity-server-shutdown"));
             int port = RmiConfig.port();
             // ponytail: Registry and Remote Object share the same port for VPS/Firewall friendliness
             Registry registry = LocateRegistry.createRegistry(port, new TimeoutSslRmiClientSocketFactory(),

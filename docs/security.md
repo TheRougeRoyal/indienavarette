@@ -16,6 +16,8 @@ The client registers its local hostname. If hostname lookup fails, `activity.cli
 
 The client uses `activity.rmi.connect-timeout-ms` and `activity.rmi.read-timeout-ms` (defaults 5000 and 10000) for bounded RMI calls. It retries using exponential delays from 1 to 60 seconds.
 
+The server evicts inactive sessions after three heartbeat timeouts by default (90 seconds with the 30-second heartbeat timeout). Configure the multiplier with `activity.server.stale-session-multiplier` (integer range 1–1000). Eviction removes the active session credential but retains the client's bounded activity history in memory.
+
 ## Serialization filter
 
 Before creating the registry, the server installs a bounded serialization filter. Its application/JDK allowlist contains `ActivityEvent`, `String`, and the `java.time.Ser` serialization proxy used by `LocalDateTime`; Java RMI transport classes are also permitted. The filter limits depth to 20, references to 10,000, arrays to 10,000 elements, and serialized input to 1 MiB. Add future serialized API types deliberately and test that unlisted types remain rejected.
