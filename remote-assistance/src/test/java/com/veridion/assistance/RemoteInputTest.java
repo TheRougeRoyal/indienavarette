@@ -9,6 +9,7 @@ import java.rmi.server.UnicastRemoteObject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Predicate;
+import java.util.concurrent.atomic.AtomicLong;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -62,6 +63,13 @@ class RemoteInputTest {
 
     private ConsentClientHandler newHandler(Predicate<String> consent) throws RemoteException {
         return newHandler(consent, operator -> false);
+    }
+
+    private ConsentClientHandler newClockedHandler(AtomicLong clock) throws RemoteException {
+        ConsentClientHandler created = new ConsentClientHandler(
+                operator -> true, operator -> true, VALID_TOKEN, clock::get, 100);
+        handlers.add(created);
+        return created;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -431,39 +439,19 @@ class RemoteInputTest {
                 "Screen capture must succeed before expiry");
     }
 
-    /**
-     * Manipulating {@code sessionCreatedAt} to simulate time passage: if the session creation
-     * time is set far enough in the past, the next call should be rejected with a
-     * {@link RemoteException} indicating expiry.
-     *
-     * <p>This uses a reflection-free approach: we read the handler's {@code sessionCreatedAt}
-     * via the exposed accessor and verify that the expiry logic would trigger when
-     * {@code SESSION_TIMEOUT_MS} is exceeded. We simulate elapsed time by temporarily replacing
-     * the handler with one whose timeout is 1 ms.
-     */
+    /** Expiry is deterministic: advancing the injected clock beyond the timeout rejects capture. */
     @Test
     void expiresSessionAfterTimeout() throws Exception {
-        // Create a handler with a 1 ms session timeout to avoid real sleeping
-        System.setProperty("activity.assistance.session-timeout-ms", "1");
-        ConsentClientHandler shortTimeoutHandler =
-                newHandler(op -> true, op -> true);
-        try {
-            String sId = shortTimeoutHandler.requestAssistance("Operator", VALID_TOKEN);
+        AtomicLong clock = new AtomicLong(10_000);
+        ConsentClientHandler shortTimeoutHandler = newClockedHandler(clock);
+        String sId = shortTimeoutHandler.requestAssistance("Operator", VALID_TOKEN);
 
-            // Confirm session is initially valid
-            assertDoesNotThrow(() -> shortTimeoutHandler.captureScreen(sId, VALID_TOKEN));
-
-            // Sleep just enough for the 1 ms timeout to expire
-            Thread.sleep(10);
-
-            // Next call must be rejected due to expiry
-            assertThrows(RemoteException.class,
-                    () -> shortTimeoutHandler.captureScreen(sId, VALID_TOKEN),
-                    "captureScreen must throw after session timeout");
-        } finally {
-            System.clearProperty("activity.assistance.session-timeout-ms");
-            UnicastRemoteObject.unexportObject(shortTimeoutHandler, true);
-        }
+        assertEquals(ConsentClientHandler.SessionState.ACTIVE_VIEW, shortTimeoutHandler.getState());
+        clock.addAndGet(101);
+        assertThrows(RemoteException.class,
+                () -> shortTimeoutHandler.captureScreen(sId, VALID_TOKEN),
+                "captureScreen must throw after session timeout");
+        assertEquals(ConsentClientHandler.SessionState.TERMINATED, shortTimeoutHandler.getState());
     }
 
     /**
@@ -471,23 +459,17 @@ class RemoteInputTest {
      */
     @Test
     void expiresSessionForInputAfterTimeout() throws Exception {
-        System.setProperty("activity.assistance.session-timeout-ms", "1");
-        ConsentClientHandler shortTimeoutHandler =
-                newHandler(op -> true, op -> true);
-        try {
-            String sId = shortTimeoutHandler.requestAssistance("Operator", VALID_TOKEN);
-            shortTimeoutHandler.requestInputControl(sId, VALID_TOKEN);
+        AtomicLong clock = new AtomicLong(20_000);
+        ConsentClientHandler shortTimeoutHandler = newClockedHandler(clock);
+        String sId = shortTimeoutHandler.requestAssistance("Operator", VALID_TOKEN);
+        shortTimeoutHandler.requestInputControl(sId, VALID_TOKEN);
 
-            Thread.sleep(10);  // let the 1 ms timeout lapse
-
-            RemoteInputCommand cmd = new RemoteInputCommand(CommandType.MOUSE_MOVE, 100, 100, 0, 0, 0, 1);
-            assertThrows(RemoteException.class,
-                    () -> shortTimeoutHandler.executeInput(sId, VALID_TOKEN, cmd),
-                    "executeInput must throw after session timeout");
-        } finally {
-            System.clearProperty("activity.assistance.session-timeout-ms");
-            UnicastRemoteObject.unexportObject(shortTimeoutHandler, true);
-        }
+        clock.addAndGet(101);
+        RemoteInputCommand cmd = new RemoteInputCommand(CommandType.MOUSE_MOVE, 100, 100, 0, 0, 0, 1);
+        assertThrows(RemoteException.class,
+                () -> shortTimeoutHandler.executeInput(sId, VALID_TOKEN, cmd),
+                "executeInput must throw after session timeout");
+        assertEquals(ConsentClientHandler.SessionState.TERMINATED, shortTimeoutHandler.getState());
     }
 
     /**
@@ -495,20 +477,14 @@ class RemoteInputTest {
      */
     @Test
     void sessionStateIsTerminatedAfterExpiry() throws Exception {
-        System.setProperty("activity.assistance.session-timeout-ms", "1");
-        ConsentClientHandler shortTimeoutHandler =
-                newHandler(op -> true, op -> true);
-        try {
-            String sId = shortTimeoutHandler.requestAssistance("Operator", VALID_TOKEN);
-            Thread.sleep(10);
+        AtomicLong clock = new AtomicLong(30_000);
+        ConsentClientHandler shortTimeoutHandler = newClockedHandler(clock);
+        String sId = shortTimeoutHandler.requestAssistance("Operator", VALID_TOKEN);
+        clock.addAndGet(101);
 
-            try { shortTimeoutHandler.captureScreen(sId, VALID_TOKEN); } catch (RemoteException ignored) {}
-
-            assertEquals(ConsentClientHandler.SessionState.TERMINATED, shortTimeoutHandler.getState(),
-                    "State must be TERMINATED after expiry is detected");
-        } finally {
-            System.clearProperty("activity.assistance.session-timeout-ms");
-            UnicastRemoteObject.unexportObject(shortTimeoutHandler, true);
-        }
+        assertThrows(RemoteException.class,
+                () -> shortTimeoutHandler.captureScreen(sId, VALID_TOKEN));
+        assertEquals(ConsentClientHandler.SessionState.TERMINATED, shortTimeoutHandler.getState(),
+                "State must be TERMINATED after expiry is detected");
     }
 }

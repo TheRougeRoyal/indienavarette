@@ -8,6 +8,7 @@ import javax.rmi.ssl.SslRMIServerSocketFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.UUID;
 import java.util.function.Predicate;
+import java.util.function.LongSupplier;
 import java.util.Set;
 import java.util.HashSet;
 import java.awt.Rectangle;
@@ -58,6 +59,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     private final Predicate<String> consentPrompt;
     private final Predicate<String> inputConsentPrompt;
     private final byte[] operatorCredentialHash;
+    private final LongSupplier currentTimeMillis;
 
     /** Per-session sequence number. Resets to -1 on new session. */
     private long lastSequenceNumber = -1;
@@ -84,14 +86,28 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
 
     ConsentClientHandler(Predicate<String> consentPrompt, Predicate<String> inputConsentPrompt,
                          String operatorCredential) throws RemoteException {
+        this(consentPrompt, inputConsentPrompt, operatorCredential, System::currentTimeMillis);
+    }
+
+    ConsentClientHandler(Predicate<String> consentPrompt, Predicate<String> inputConsentPrompt,
+                         String operatorCredential, LongSupplier currentTimeMillis) throws RemoteException {
+        this(consentPrompt, inputConsentPrompt, operatorCredential, currentTimeMillis,
+                Long.getLong("activity.assistance.session-timeout-ms", 30L * 60 * 1000));
+    }
+
+    ConsentClientHandler(Predicate<String> consentPrompt, Predicate<String> inputConsentPrompt,
+                         String operatorCredential, LongSupplier currentTimeMillis,
+                         long sessionTimeoutMs) throws RemoteException {
         super(0, new TimeoutSslRmiClientSocketFactory(), new SslRMIServerSocketFactory(null, null, false));
         if (operatorCredential == null || operatorCredential.length() < 32)
             throw new RemoteException("Configure a protected assistance operator token of at least 32 characters");
+        if (sessionTimeoutMs <= 0) throw new RemoteException("Assistance session timeout must be positive");
+        if (currentTimeMillis == null) throw new RemoteException("Assistance clock is required");
         this.consentPrompt = consentPrompt;
         this.inputConsentPrompt = inputConsentPrompt;
         this.operatorCredentialHash = sha256(operatorCredential);
-        this.sessionTimeoutMs = Long.getLong(
-                "activity.assistance.session-timeout-ms", 30L * 60 * 1000);
+        this.currentTimeMillis = currentTimeMillis;
+        this.sessionTimeoutMs = sessionTimeoutMs;
     }
 
     // ── Auth helpers ──────────────────────────────────────────────────────────
@@ -119,7 +135,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
      */
     private void checkSessionExpiry() throws RemoteException {
         if (!Thread.holdsLock(this)) throw new IllegalStateException("Session lock must be held");
-        if (sessionCreatedAt != -1 && (System.currentTimeMillis() - sessionCreatedAt > sessionTimeoutMs)) {
+        if (sessionCreatedAt != -1 && (currentTimeMillis.getAsLong() - sessionCreatedAt > sessionTimeoutMs)) {
             terminateSessionInternal();
             throw new RemoteException("Session has expired");
         }
@@ -157,6 +173,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
                 || !requestPending.compareAndSet(false, true)) return "";
         try {
             synchronized (this) {
+                checkSessionExpiry();
                 if (state == SessionState.ACTIVE_VIEW || state == SessionState.ACTIVE_CONTROL) return "";
                 state = SessionState.REQUESTING_CONSENT;
             }
@@ -166,7 +183,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
                     if (state == SessionState.TERMINATED) return "";
                     activeSessionId = UUID.randomUUID().toString();
                     state = SessionState.ACTIVE_VIEW;
-                    sessionCreatedAt = System.currentTimeMillis();
+                    sessionCreatedAt = currentTimeMillis.getAsLong();
                     lastSequenceNumber = -1;
                     auditLog.log(operatorName, "SESSION_STARTED", "Session ID: " + activeSessionId);
                     return activeSessionId;
@@ -246,6 +263,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     @Override
     public synchronized void requestInputControl(String sessionId, String operatorCredential) throws RemoteException {
         if (!authorized(operatorCredential)) throw new RemoteException("Assistance operator is not authorized");
+        checkSessionExpiry();
         if (sessionId == null || !sessionId.equals(activeSessionId)) throw new RemoteException("Invalid session ID");
 
         if (state == SessionState.ACTIVE_CONTROL) return;
@@ -351,9 +369,10 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
         try {
             Robot robot = new Robot();
             for (Integer keyCode : pressedKeys) robot.keyRelease(keyCode);
-            pressedKeys.clear();
-        } catch (java.awt.AWTException e) {
+        } catch (java.awt.AWTException | java.awt.HeadlessException e) {
             // Log, but do not block session teardown.
+        } finally {
+            pressedKeys.clear();
         }
     }
 
@@ -387,15 +406,27 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     // ── Accessors ─────────────────────────────────────────────────────────────
 
     /** @return {@code true} if a session is currently in VIEW or CONTROL state */
-    public boolean isSessionActive() {
+    public synchronized boolean isSessionActive() {
+        expireBeforeStateRead();
         return state == SessionState.ACTIVE_VIEW || state == SessionState.ACTIVE_CONTROL;
     }
 
     /** @return the UUID of the currently active session, or {@code null} if none */
-    public synchronized String getActiveSessionId() { return activeSessionId; }
+    public synchronized String getActiveSessionId() {
+        expireBeforeStateRead();
+        return activeSessionId;
+    }
 
     /** @return the current session lifecycle state */
-    public SessionState getState() { return state; }
+    public synchronized SessionState getState() {
+        expireBeforeStateRead();
+        return state;
+    }
+
+    private void expireBeforeStateRead() {
+        try { checkSessionExpiry(); }
+        catch (RemoteException ignored) { /* Expiry has already transitioned the state. */ }
+    }
 
     /**
      * Returns an unmodifiable view of the set of key codes currently held down by the Robot.
@@ -407,7 +438,10 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
      * Returns the timestamp (epoch ms) at which the current session was created, or {@code -1}
      * if no session is active. Exposed for testing session-expiry behaviour.
      */
-    public synchronized long getSessionCreatedAt() { return sessionCreatedAt; }
+    public synchronized long getSessionCreatedAt() {
+        expireBeforeStateRead();
+        return sessionCreatedAt;
+    }
 
     /**
      * Returns the in-memory audit log. Exposed for testing; do not expose over RMI.
