@@ -52,10 +52,13 @@ public class ServerMain {
     private static void installSerializationFilter() {
         // Bound incoming RMI object graphs and accept only the DTO and JDK types
         // used by this service. The JVM-wide filter must be installed before export.
-        ObjectInputFilter filter = ObjectInputFilter.Config.createFilter(
+        ObjectInputFilter.Config.setSerialFilter(serializationFilter());
+    }
+
+    static ObjectInputFilter serializationFilter() {
+        return ObjectInputFilter.Config.createFilter(
                 "maxdepth=20;maxrefs=10000;maxbytes=1048576;maxarray=10000;" +
-                "com.veridion.shared.*;java.base/java.lang.*;java.base/java.time.*;" +
-                "java.base/java.util.*;java.rmi.*;sun.rmi.*;javax.rmi.*;!*");
-        ObjectInputFilter.Config.setSerialFilter(filter);
+                "com.veridion.shared.ActivityEvent;java.lang.String;java.time.Ser;" +
+                "java.rmi.*;sun.rmi.*;javax.rmi.*;!*");
     }
 }

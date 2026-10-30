@@ -48,9 +48,11 @@ requires a graphical session and is not a browser dashboard. Open TCP 1099 only
 to trusted client networks, preferably through WireGuard or Tailscale.
 
 Before creating the registry, the server installs a bounded serialization
-filter that permits the service DTOs and required Java/RMI types, with limits on
-depth, references, arrays, and bytes. Add future serialized API types to this
-allowlist deliberately.
+filter. Its application/JDK allowlist contains `ActivityEvent`, `String`, and
+the `java.time.Ser` serialization proxy used by `LocalDateTime`; Java RMI
+transport classes are also permitted. The filter limits depth to 20, references
+to 10,000, arrays to 10,000 elements, and serialized input to 1 MiB. Add future
+serialized API types deliberately and test that unlisted types remain rejected.
 
 The native client bundle is platform-specific: `libveridion_native.so` is
 Linux-only and requires an X11 desktop session. Windows and macOS need separate
