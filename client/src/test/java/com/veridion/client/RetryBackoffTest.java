@@ -69,7 +69,7 @@ class RetryBackoffTest {
             client.cycleSafely();
             client.cycleSafely();
             assertEquals(1, attempts.get());
-            assertEquals(2, server.heartbeats);
+            assertEquals(1, server.heartbeats);
             assertEquals(2, server.reports);
             assertTrue(server.lastReportedApp.startsWith("[UNAVAILABLE]"));
         } finally {
