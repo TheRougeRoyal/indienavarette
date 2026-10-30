@@ -8,9 +8,8 @@ import javax.rmi.ssl.SslRMIServerSocketFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.UUID;
 import java.util.function.Predicate;
-import java.util.Collections;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.HashSet;
 import java.awt.Rectangle;
 import java.awt.Robot;
 import java.awt.Toolkit;
@@ -36,8 +35,8 @@ import com.veridion.shared.RemoteInputCommand;
  *       preventing replay attacks.</li>
  *   <li>Sessions automatically expire after {@value #SESSION_TIMEOUT_MS} ms of inactivity. Callers
  *       must obtain a new session after expiry.</li>
- *   <li>All key presses are tracked and forcibly released when the session terminates so the
- *       desktop is never left in an uncontrollable state.</li>
+ *   <li>Held key codes are kept only so they can be released at session teardown; key presses
+ *       are not logged.</li>
  * </ul>
  */
 public final class ConsentClientHandler extends UnicastRemoteObject implements IClientHandler {
@@ -67,7 +66,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
      * Keys currently held down. Tracked so they can all be released when the session ends,
      * preventing a "stuck key" state on the controlled desktop.
      */
-    private final Set<Integer> pressedKeys = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private final Set<Integer> pressedKeys = new HashSet<>();
 
     /** In-memory audit log. Captures every operator action with a timestamp. */
     private final AuditLog auditLog = new AuditLog();
@@ -119,6 +118,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
      * @throws RemoteException if the session has expired
      */
     private void checkSessionExpiry() throws RemoteException {
+        if (!Thread.holdsLock(this)) throw new IllegalStateException("Session lock must be held");
         if (sessionCreatedAt != -1 && (System.currentTimeMillis() - sessionCreatedAt > sessionTimeoutMs)) {
             terminateSessionInternal();
             throw new RemoteException("Session has expired");
@@ -132,6 +132,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
      * {@code synchronized} context.
      */
     private void terminateSessionInternal() {
+        if (!Thread.holdsLock(this)) throw new IllegalStateException("Session lock must be held");
         releaseAllKeys();
         state = SessionState.TERMINATED;
         activeSessionId = null;
@@ -153,11 +154,12 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
         if (!authorized(operatorCredential)) throw new RemoteException("Assistance operator is not authorized");
         if (operatorName == null || operatorName.isBlank() || operatorName.length() > 128) return "";
         if (java.awt.GraphicsEnvironment.isHeadless()
-                || state == SessionState.ACTIVE_VIEW
-                || state == SessionState.ACTIVE_CONTROL
                 || !requestPending.compareAndSet(false, true)) return "";
         try {
-            state = SessionState.REQUESTING_CONSENT;
+            synchronized (this) {
+                if (state == SessionState.ACTIVE_VIEW || state == SessionState.ACTIVE_CONTROL) return "";
+                state = SessionState.REQUESTING_CONSENT;
+            }
             boolean accepted = consentPrompt.test(operatorName);
             if (accepted) {
                 synchronized (this) {
@@ -170,8 +172,10 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
                     return activeSessionId;
                 }
             }
-            if (state != SessionState.TERMINATED) state = SessionState.IDLE;
-            return "";
+            synchronized (this) {
+                if (state != SessionState.TERMINATED) state = SessionState.IDLE;
+                return "";
+            }
         } catch (RuntimeException e) {
             throw new RemoteException("Unable to obtain local consent", e);
         } finally {
@@ -339,14 +343,11 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
      * stuck in the down state.
      */
     private void releaseAllKeys() {
+        if (!Thread.holdsLock(this)) throw new IllegalStateException("Session lock must be held");
         try {
             Robot robot = new Robot();
-            synchronized (pressedKeys) {
-                for (Integer keyCode : pressedKeys) {
-                    robot.keyRelease(keyCode);
-                }
-                pressedKeys.clear();
-            }
+            for (Integer keyCode : pressedKeys) robot.keyRelease(keyCode);
+            pressedKeys.clear();
         } catch (java.awt.AWTException e) {
             // Log, but do not block session teardown.
         }
@@ -387,7 +388,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     }
 
     /** @return the UUID of the currently active session, or {@code null} if none */
-    public String getActiveSessionId() { return activeSessionId; }
+    public synchronized String getActiveSessionId() { return activeSessionId; }
 
     /** @return the current session lifecycle state */
     public SessionState getState() { return state; }
@@ -396,13 +397,13 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
      * Returns an unmodifiable view of the set of key codes currently held down by the Robot.
      * Exposed for testing only; do not rely on this in production callers.
      */
-    public Set<Integer> getPressedKeys() { return pressedKeys; }
+    public synchronized Set<Integer> getPressedKeys() { return Set.copyOf(pressedKeys); }
 
     /**
      * Returns the timestamp (epoch ms) at which the current session was created, or {@code -1}
      * if no session is active. Exposed for testing session-expiry behaviour.
      */
-    public long getSessionCreatedAt() { return sessionCreatedAt; }
+    public synchronized long getSessionCreatedAt() { return sessionCreatedAt; }
 
     /**
      * Returns the in-memory audit log. Exposed for testing; do not expose over RMI.
