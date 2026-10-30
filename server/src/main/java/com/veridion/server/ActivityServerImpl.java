@@ -38,13 +38,7 @@ public class ActivityServerImpl extends UnicastRemoteObject implements IActivity
         this(requiredEnrollmentTokens(), RmiConfig.objectPort(), Duration.ofSeconds(HEARTBEAT_TIMEOUT_SECONDS));
     }
 
-    ActivityServerImpl(String enrollmentToken) throws RemoteException { this(Map.of("c1", enrollmentToken), 0, Duration.ofSeconds(HEARTBEAT_TIMEOUT_SECONDS)); }
-
-    ActivityServerImpl(String enrollmentToken, int objectPort) throws RemoteException { this(Map.of("c1", enrollmentToken), objectPort, Duration.ofSeconds(HEARTBEAT_TIMEOUT_SECONDS)); }
-
-    ActivityServerImpl(String enrollmentToken, Duration heartbeatTimeout) throws RemoteException { this(Map.of("c1", enrollmentToken), 0, heartbeatTimeout); }
-
-    protected ActivityServerImpl(Map<String, String> enrollmentTokens, int objectPort, Duration heartbeatTimeout) throws RemoteException {
+    ActivityServerImpl(Map<String, String> enrollmentTokens, int objectPort, Duration heartbeatTimeout) throws RemoteException {
         // ponytail: use provided port instead of 0 for firewall friendliness
         super(objectPort, new TimeoutSslRmiClientSocketFactory(), new SslRMIServerSocketFactory(null, null, false));
         if (enrollmentTokens == null || enrollmentTokens.isEmpty()) throw new RemoteException("No client enrollment credentials configured");

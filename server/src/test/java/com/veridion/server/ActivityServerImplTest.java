@@ -6,6 +6,7 @@ import java.rmi.server.UnicastRemoteObject;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.net.ServerSocket;
+import java.util.Map;
 import java.rmi.registry.LocateRegistry;
 import java.rmi.registry.Registry;
 import com.veridion.shared.TimeoutSslRmiClientSocketFactory;
@@ -19,7 +20,7 @@ class ActivityServerImplTest {
     private static final String ENROLLMENT = "this-is-a-test-enrollment-secret-long-enough";
     private ActivityServerImpl server;
 
-    @BeforeEach void setUp() throws Exception { server = new ActivityServerImpl(ENROLLMENT, Duration.ofMillis(60)); }
+    @BeforeEach void setUp() throws Exception { server = new ActivityServerImpl(Map.of("c1", ENROLLMENT), 0, Duration.ofMillis(60)); }
     @AfterEach void tearDown() throws Exception { server.close(); UnicastRemoteObject.unexportObject(server, true); }
 
     @Test void registryAndServiceCanShareOneRmiPort() throws Exception {
@@ -27,11 +28,12 @@ class ActivityServerImplTest {
         try (ServerSocket socket = new ServerSocket(0)) { port = socket.getLocalPort(); }
         Registry registry = LocateRegistry.createRegistry(port, new TimeoutSslRmiClientSocketFactory(),
                 new SslRMIServerSocketFactory(null, null, false));
-        ActivityServerImpl samePortServer = new ActivityServerImpl(ENROLLMENT, port);
+        ActivityServerImpl samePortServer = new ActivityServerImpl(Map.of("c1", ENROLLMENT), port, Duration.ofSeconds(30));
         try {
             registry.rebind("ActivityServer", samePortServer);
             assertNotNull(registry.lookup("ActivityServer"));
         } finally {
+            samePortServer.close();
             UnicastRemoteObject.unexportObject(samePortServer, true);
             UnicastRemoteObject.unexportObject(registry, true);
         }
