@@ -5,7 +5,6 @@ import java.rmi.RemoteException;
 import java.rmi.server.UnicastRemoteObject;
 import com.veridion.shared.TimeoutSslRmiClientSocketFactory;
 import javax.rmi.ssl.SslRMIServerSocketFactory;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.UUID;
 import java.util.function.Predicate;
 import java.util.function.LongSupplier;
@@ -52,10 +51,11 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     final long sessionTimeoutMs;
 
     // ── Instance state ────────────────────────────────────────────────────────
-    private final AtomicBoolean requestPending = new AtomicBoolean();
     private volatile SessionState state = SessionState.IDLE;
     private volatile String activeSessionId;
     private String activeOperatorName;
+    private UUID pendingSessionPromptToken;
+    private UUID pendingInputPromptToken;
     private volatile long sessionCreatedAt = -1;
 
     private final Predicate<String> consentPrompt;
@@ -168,6 +168,8 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
         state = SessionState.TERMINATED;
         activeSessionId = null;
         activeOperatorName = null;
+        pendingSessionPromptToken = null;
+        pendingInputPromptToken = null;
         sessionCreatedAt = -1;
         lastSequenceNumber = -1;
     }
@@ -187,50 +189,67 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     public String requestAssistance(String operatorName, String operatorCredential) throws RemoteException {
         if (!authorized(operatorCredential)) throw new RemoteException("Assistance operator is not authorized");
         if (operatorName == null || operatorName.isBlank() || operatorName.length() > 128) return "";
-        if (java.awt.GraphicsEnvironment.isHeadless()
-                || !requestPending.compareAndSet(false, true)) return "";
+        if (java.awt.GraphicsEnvironment.isHeadless()) return "";
+
+        UUID promptToken = UUID.randomUUID();
+        synchronized (this) {
+            checkSessionExpiry();
+            if (state == SessionState.ACTIVE_VIEW || state == SessionState.ACTIVE_CONTROL
+                    || state == SessionState.REQUESTING_INPUT_CONSENT
+                    || pendingSessionPromptToken != null) return "";
+            pendingSessionPromptToken = promptToken;
+            state = SessionState.REQUESTING_CONSENT;
+        }
+
+        final boolean accepted;
         try {
+            accepted = consentPrompt.test(operatorName);
+        } catch (RuntimeException e) {
             synchronized (this) {
-                checkSessionExpiry();
-                if (state == SessionState.ACTIVE_VIEW || state == SessionState.ACTIVE_CONTROL
-                        || state == SessionState.REQUESTING_INPUT_CONSENT) return "";
-                state = SessionState.REQUESTING_CONSENT;
-            }
-            boolean accepted = consentPrompt.test(operatorName);
-            if (accepted) {
-                synchronized (this) {
-                    if (state == SessionState.TERMINATED) return "";
-                    activeSessionId = UUID.randomUUID().toString();
-                    activeOperatorName = operatorName;
-                    state = SessionState.ACTIVE_VIEW;
-                    sessionCreatedAt = currentTimeMillis.getAsLong();
-                    lastSequenceNumber = -1;
-                    auditLog.log(operatorName, "SESSION_STARTED", "Session ID: " + activeSessionId);
-                    return activeSessionId;
+                if (promptToken.equals(pendingSessionPromptToken)
+                        && state == SessionState.REQUESTING_CONSENT) {
+                    pendingSessionPromptToken = null;
+                    state = SessionState.IDLE;
                 }
             }
-            synchronized (this) {
-                if (state != SessionState.TERMINATED) state = SessionState.IDLE;
+            throw new RemoteException("Unable to obtain local consent", e);
+        }
+
+        synchronized (this) {
+            if (!promptToken.equals(pendingSessionPromptToken)
+                    || state != SessionState.REQUESTING_CONSENT) return "";
+            pendingSessionPromptToken = null;
+            if (!accepted) {
+                state = SessionState.IDLE;
                 return "";
             }
-        } catch (RuntimeException e) {
-            throw new RemoteException("Unable to obtain local consent", e);
-        } finally {
-            requestPending.set(false);
+            activeSessionId = UUID.randomUUID().toString();
+            activeOperatorName = operatorName;
+            state = SessionState.ACTIVE_VIEW;
+            sessionCreatedAt = currentTimeMillis.getAsLong();
+            lastSequenceNumber = -1;
+            auditLog.log(operatorName, "SESSION_STARTED", "Session ID: " + activeSessionId);
+            return activeSessionId;
         }
     }
 
     /**
      * Terminates an active session. Any keys held by the Robot at the time of termination are
-     * released immediately to leave the desktop in a controllable state.
+     * released immediately to leave the desktop in a controllable state. Passing a null session ID
+     * cancels a pending initial consent prompt.
      *
-     * @param sessionId          the UUID of the session to terminate
+     * @param sessionId          the UUID of the session to terminate, or null to cancel initial consent
      * @param operatorCredential shared secret
      * @throws RemoteException if the credential is invalid
      */
     @Override
     public synchronized void terminateSession(String sessionId, String operatorCredential) throws RemoteException {
         if (!authorized(operatorCredential)) throw new RemoteException("Assistance operator is not authorized");
+        if (sessionId == null && state == SessionState.REQUESTING_CONSENT
+                && pendingSessionPromptToken != null) {
+            terminateSessionInternal();
+            return;
+        }
         if (sessionId != null && sessionId.equals(activeSessionId)
                 && (state == SessionState.ACTIVE_VIEW
                         || state == SessionState.ACTIVE_CONTROL
@@ -289,6 +308,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     @Override
     public void requestInputControl(String sessionId, String operatorCredential) throws RemoteException {
         if (!authorized(operatorCredential)) throw new RemoteException("Assistance operator is not authorized");
+        UUID promptToken;
         synchronized (this) {
             checkSessionExpiry();
             if (sessionId == null || !sessionId.equals(activeSessionId))
@@ -296,6 +316,8 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
             if (state == SessionState.ACTIVE_CONTROL) return;
             if (state != SessionState.ACTIVE_VIEW)
                 throw new RemoteException("Client must first be in a viewing session");
+            promptToken = UUID.randomUUID();
+            pendingInputPromptToken = promptToken;
             state = SessionState.REQUESTING_INPUT_CONSENT;
         }
 
@@ -304,17 +326,23 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
             accepted = inputConsentPrompt.test("Remote input control request");
         } catch (RuntimeException e) {
             synchronized (this) {
-                if (state == SessionState.REQUESTING_INPUT_CONSENT
-                        && sessionId.equals(activeSessionId)) state = SessionState.ACTIVE_VIEW;
+                if (promptToken.equals(pendingInputPromptToken)
+                        && state == SessionState.REQUESTING_INPUT_CONSENT
+                        && sessionId.equals(activeSessionId)) {
+                    pendingInputPromptToken = null;
+                    state = SessionState.ACTIVE_VIEW;
+                }
             }
             throw new RemoteException("Unable to obtain input consent", e);
         }
         synchronized (this) {
             checkSessionExpiry();
-            if (state != SessionState.REQUESTING_INPUT_CONSENT
+            if (!promptToken.equals(pendingInputPromptToken)
+                    || state != SessionState.REQUESTING_INPUT_CONSENT
                     || !sessionId.equals(activeSessionId)) {
                 throw new RemoteException("Session ended while input consent was pending");
             }
+            pendingInputPromptToken = null;
             state = accepted ? SessionState.ACTIVE_CONTROL : SessionState.ACTIVE_VIEW;
         }
     }
