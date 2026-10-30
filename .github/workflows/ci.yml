@@ -17,10 +17,10 @@ jobs:
       - name: Install native build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libx11-dev cmake
+          sudo apt-get install --yes libx11-dev cmake xvfb
       - name: Configure native tracker
         run: cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release
       - name: Build native tracker
         run: cmake --build native/build
       - name: Verify Maven modules
-        run: mvn -DargLine="-Djava.library.path=$PWD/native/build" clean verify
+        run: xvfb-run -a mvn -DargLine="-Djava.library.path=$PWD/native/build" clean verify
