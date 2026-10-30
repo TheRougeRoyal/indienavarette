@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libx11-dev cmake
+      - name: Configure native tracker
+        run: cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release
+      - name: Build native tracker
+        run: cmake --build native/build
+      - name: Verify Maven modules
+        run: mvn -DargLine="-Djava.library.path=$PWD/native/build" clean verify
