@@ -82,14 +82,22 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
      */
     private final Set<Integer> pressedKeys = new HashSet<>();
 
-    /** In-memory audit log. Captures every operator action with a timestamp. */
-    private final AuditLog auditLog = new AuditLog();
+    /** Audit records are forced to the configured file before protected actions are performed. */
+    private final AuditLog auditLog;
 
     // ── Constructors ──────────────────────────────────────────────────────────
 
     public ConsentClientHandler() throws RemoteException {
         this(ConsentClientHandler::showPrompt, ConsentClientHandler::showInputPrompt,
-                System.getProperty("activity.assistance.operator-token"));
+                System.getProperty("activity.assistance.operator-token"), configuredAuditLog());
+    }
+
+    private static AuditLog configuredAuditLog() throws RemoteException {
+        String configuredPath = System.getProperty("activity.assistance.audit-log");
+        if (configuredPath == null || configuredPath.isBlank())
+            throw new RemoteException("Configure activity.assistance.audit-log before starting assistance");
+        try { return new AuditLog(java.nio.file.Path.of(configuredPath)); }
+        catch (IOException e) { throw new RemoteException("Unable to open secure assistance audit log", e); }
     }
 
     ConsentClientHandler(Predicate<String> consentPrompt, String operatorCredential) throws RemoteException {
@@ -99,6 +107,13 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     ConsentClientHandler(Predicate<String> consentPrompt, Predicate<String> inputConsentPrompt,
                          String operatorCredential) throws RemoteException {
         this(consentPrompt, inputConsentPrompt, operatorCredential, System::currentTimeMillis);
+    }
+
+    ConsentClientHandler(Predicate<String> consentPrompt, Predicate<String> inputConsentPrompt,
+                         String operatorCredential, AuditLog auditLog) throws RemoteException {
+        this(consentPrompt, inputConsentPrompt, operatorCredential, System::currentTimeMillis,
+                Long.getLong("activity.assistance.session-timeout-ms", 30L * 60 * 1000),
+                null, null, auditLog);
     }
 
     ConsentClientHandler(Predicate<String> consentPrompt, Predicate<String> inputConsentPrompt,
@@ -118,6 +133,14 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
                          String operatorCredential, LongSupplier currentTimeMillis,
                          long sessionTimeoutMs, Supplier<java.awt.Dimension> screenSizeSupplier,
                          InputExecutor inputExecutor) throws RemoteException {
+        this(consentPrompt, inputConsentPrompt, operatorCredential, currentTimeMillis, sessionTimeoutMs,
+                screenSizeSupplier, inputExecutor, new AuditLog());
+    }
+
+    ConsentClientHandler(Predicate<String> consentPrompt, Predicate<String> inputConsentPrompt,
+                         String operatorCredential, LongSupplier currentTimeMillis,
+                         long sessionTimeoutMs, Supplier<java.awt.Dimension> screenSizeSupplier,
+                         InputExecutor inputExecutor, AuditLog auditLog) throws RemoteException {
         super(0, new TimeoutSslRmiClientSocketFactory(), new SslRMIServerSocketFactory(null, null, false));
         if (operatorCredential == null || operatorCredential.length() < 32)
             throw new RemoteException("Configure a protected assistance operator token of at least 32 characters");
@@ -131,6 +154,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
         this.screenSizeSupplier = screenSizeSupplier == null
                 ? () -> Toolkit.getDefaultToolkit().getScreenSize() : screenSizeSupplier;
         this.inputExecutor = inputExecutor == null ? this::executeInputWithRobot : inputExecutor;
+        this.auditLog = java.util.Objects.requireNonNull(auditLog, "auditLog");
         this.inputActionQueue = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(256), task -> {
                     Thread thread = new Thread(task, "remote-assistance-input");
@@ -237,12 +261,19 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
                 state = SessionState.IDLE;
                 return "";
             }
-            activeSessionId = UUID.randomUUID().toString();
+            String newSessionId = UUID.randomUUID().toString();
+            try {
+                auditLog.log(operatorName, "SESSION_STARTED", newSessionId,
+                        "Session ID: " + newSessionId);
+            } catch (IOException e) {
+                state = SessionState.IDLE;
+                throw new RemoteException("Unable to write assistance audit record", e);
+            }
+            activeSessionId = newSessionId;
             activeOperatorName = operatorName;
             state = SessionState.ACTIVE_VIEW;
             sessionCreatedAt = currentTimeMillis.getAsLong();
             lastSequenceNumber = -1;
-            auditLog.log(operatorName, "SESSION_STARTED", "Session ID: " + activeSessionId);
             return activeSessionId;
         }
     }
@@ -291,7 +322,11 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
             throw new RemoteException("No active assistance session authorized for screen capture");
         }
 
-        auditLog.log(activeOperatorName, "SCREEN_CAPTURE", "Session: " + sessionId);
+        try {
+            auditLog.log(activeOperatorName, "SCREEN_CAPTURE", sessionId, "Session: " + sessionId);
+        } catch (IOException e) {
+            throw new RemoteException("Unable to write assistance audit record", e);
+        }
 
         try {
             java.awt.Dimension screenSize = screenSizeSupplier.get();
@@ -415,8 +450,12 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
                 throw new RemoteException("Invalid command: " + e.getMessage(), e);
             }
 
-            auditLog.log(activeOperatorName, "INPUT_EXECUTED",
-                    "Type: " + command.type() + " Seq: " + command.sequenceNumber());
+            try {
+                auditLog.log(activeOperatorName, "INPUT_EXECUTED", sessionId,
+                        "Type: " + command.type() + " Seq: " + command.sequenceNumber());
+            } catch (IOException e) {
+                throw new RemoteException("Unable to write assistance audit record", e);
+            }
             try {
                 queuedAction = inputActionQueue.submit(() -> executeQueuedInput(command, sessionId));
             } catch (RejectedExecutionException e) {
@@ -524,6 +563,8 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
         }
         try { UnicastRemoteObject.unexportObject(this, true); }
         catch (java.rmi.NoSuchObjectException ignored) { }
+        try { auditLog.close(); }
+        catch (IOException e) { System.err.println("Unable to close assistance audit log: " + e.getMessage()); }
     }
 
     // ── Prompt helpers ────────────────────────────────────────────────────────

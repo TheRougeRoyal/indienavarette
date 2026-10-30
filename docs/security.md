@@ -24,4 +24,6 @@ Before creating the registry, the server installs a bounded serialization filter
 
 ## Remote-assistance prototype warning
 
-The consent endpoint in `remote-assistance` requires `-Dactivity.assistance.operator-token=<protected-32-character-token>` and TLS RMI transport. The module contains screen capture and input methods, but it is not exported through the activity server registry or connected to a server-side operator workflow. Treat those methods as an unintegrated prototype; do not expose them as a production remote-assistance service. It is not integrated into the activity server or client.
+The consent endpoint in `remote-assistance` requires `-Dactivity.assistance.operator-token=<protected-32-character-token>`, `-Dactivity.assistance.audit-log=<private-file-path>`, and TLS RMI transport. The audit path is mandatory for production construction. The log is append-only and each entry is forced to disk; the file must support POSIX owner-only (`rw-------`) permissions or startup fails. There is no shared temporary-directory default. Tests may use the package-private in-memory audit sink.
+
+The module contains screen capture and input methods, but it is not exported through the activity server registry or connected to a server-side operator workflow. Treat those methods as an unintegrated prototype; do not expose them as a production remote-assistance service. It is not integrated into the activity server or client.
