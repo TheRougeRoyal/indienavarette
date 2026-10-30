@@ -20,7 +20,7 @@ class ActivityServerImplTest {
     private ActivityServerImpl server;
 
     @BeforeEach void setUp() throws Exception { server = new ActivityServerImpl(ENROLLMENT, Duration.ofMillis(60)); }
-    @AfterEach void tearDown() throws Exception { UnicastRemoteObject.unexportObject(server, true); }
+    @AfterEach void tearDown() throws Exception { server.close(); UnicastRemoteObject.unexportObject(server, true); }
 
     @Test void registryAndServiceCanShareOneRmiPort() throws Exception {
         int port;
@@ -73,5 +73,17 @@ class ActivityServerImplTest {
         assertTrue(server.isConnected(session));
         Thread.sleep(80);
         assertFalse(server.isConnected(session));
+    }
+
+    @Test void staleSessionEvictionRemovesCredentialButRetainsActivityHistory() throws Exception {
+        String credential = server.registerClient("c1", "host", ENROLLMENT);
+        server.reportActivity(new ActivityEvent("c1", "Editor", "kept history", LocalDateTime.now()), credential);
+
+        long deadline = System.nanoTime() + Duration.ofSeconds(2).toNanos();
+        while (!server.getClients().isEmpty() && System.nanoTime() < deadline) Thread.sleep(10);
+
+        assertFalse(server.getClients().containsKey("c1"), "stale client should be evicted");
+        assertThrows(RemoteException.class, () -> server.sendHeartbeat("c1", credential));
+        assertEquals("kept history", server.getLogsForClient("c1").firstEntry().getValue().windowTitle());
     }
 }

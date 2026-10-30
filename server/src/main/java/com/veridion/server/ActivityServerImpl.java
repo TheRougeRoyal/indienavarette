@@ -17,7 +17,7 @@ import java.util.Properties;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-public class ActivityServerImpl extends UnicastRemoteObject implements IActivityServer {
+public class ActivityServerImpl extends UnicastRemoteObject implements IActivityServer, AutoCloseable {
     private final ConcurrentHashMap<String, ClientSession> clients = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> clientCredentials = new ConcurrentHashMap<>();
     private final Map<String, byte[]> enrollmentTokenHashes;
@@ -25,6 +25,13 @@ public class ActivityServerImpl extends UnicastRemoteObject implements IActivity
     private static final int MAX_EVENTS_PER_CLIENT = 5000;
     private static final long HEARTBEAT_TIMEOUT_SECONDS = 30;
     private final Duration heartbeatTimeout;
+    private final Duration staleSessionTimeout;
+    private final Object sessionLock = new Object();
+    private final ScheduledExecutorService cleanupExecutor = Executors.newSingleThreadScheduledExecutor(task -> {
+        Thread thread = new Thread(task, "activity-session-cleanup");
+        thread.setDaemon(true);
+        return thread;
+    });
     private final ConcurrentHashMap<String, ConcurrentSkipListMap<LocalDateTime, ActivityEvent>> activityLogs = new ConcurrentHashMap<>();
 
     protected ActivityServerImpl() throws RemoteException {
@@ -52,6 +59,13 @@ public class ActivityServerImpl extends UnicastRemoteObject implements IActivity
         }
         this.enrollmentTokenHashes = Map.copyOf(hashes);
         this.heartbeatTimeout = heartbeatTimeout;
+        int staleMultiplier = Integer.getInteger("activity.server.stale-session-multiplier", 3);
+        if (staleMultiplier < 1 || staleMultiplier > 1000)
+            throw new RemoteException("activity.server.stale-session-multiplier must be 1..1000");
+        this.staleSessionTimeout = heartbeatTimeout.multipliedBy(staleMultiplier);
+        long cleanupIntervalMillis = Math.max(1, heartbeatTimeout.toMillis() / 2);
+        cleanupExecutor.scheduleWithFixedDelay(this::evictStaleSessionsSafely,
+                cleanupIntervalMillis, cleanupIntervalMillis, TimeUnit.MILLISECONDS);
     }
 
     private static Map<String, String> requiredEnrollmentTokens() throws RemoteException {
@@ -80,16 +94,17 @@ public class ActivityServerImpl extends UnicastRemoteObject implements IActivity
                 || !MessageDigest.isEqual(expectedHash, sha256(enrollmentToken)))
             throw new RemoteException("Client enrollment rejected");
 
-        // ponytail: invalidate old session on re-registration
-        clientCredentials.remove(clientId);
-
-        System.out.println("Registering client: " + clientId + " [" + hostname + "]");
-        clients.put(clientId, new ClientSession(clientId, hostname));
-        activityLogs.computeIfAbsent(clientId, ignored -> new ConcurrentSkipListMap<>());
-        byte[] secret = new byte[32]; RANDOM.nextBytes(secret);
-        String credential = HexFormat.of().formatHex(secret);
-        clientCredentials.put(clientId, credential);
-        return credential;
+        synchronized (sessionLock) {
+            // Re-enrollment rotates the credential for this client.
+            clientCredentials.remove(clientId);
+            System.out.println("Registering client: " + clientId + " [" + hostname + "]");
+            clients.put(clientId, new ClientSession(clientId, hostname));
+            activityLogs.computeIfAbsent(clientId, ignored -> new ConcurrentSkipListMap<>());
+            byte[] secret = new byte[32]; RANDOM.nextBytes(secret);
+            String credential = HexFormat.of().formatHex(secret);
+            clientCredentials.put(clientId, credential);
+            return credential;
+        }
     }
 
     @Override
@@ -120,6 +135,24 @@ public class ActivityServerImpl extends UnicastRemoteObject implements IActivity
         if (expected == null || credential == null || !MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8), credential.getBytes(StandardCharsets.UTF_8)))
             throw new RemoteException("Client is not authorized");
     }
+
+    private void evictStaleSessionsSafely() {
+        try { evictStaleSessions(); }
+        catch (RuntimeException e) { System.err.println("Stale client cleanup failed: " + e.getMessage()); }
+    }
+
+    private void evictStaleSessions() {
+        LocalDateTime cutoff = LocalDateTime.now().minus(staleSessionTimeout);
+        synchronized (sessionLock) {
+            clients.forEach((id, session) -> {
+                if (session.getLastSeen().isBefore(cutoff) && clients.remove(id, session))
+                    clientCredentials.remove(id);
+            });
+        }
+    }
+
+    /** Stops the background stale-session cleanup task. Activity history remains available. */
+    @Override public void close() { cleanupExecutor.shutdownNow(); }
 
     public Map<String, ClientSession> getClients() {
         return Collections.unmodifiableMap(new HashMap<>(clients));
