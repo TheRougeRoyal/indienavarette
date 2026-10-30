@@ -1,18 +1,4 @@
-#if defined(__has_include)
-#  if __has_include(<jni.h>)    
-#    include <jni.h>
-#  elif __has_include("/usr/lib/jvm/default-java/include/jni.h")
-#    include "/usr/lib/jvm/default-java/include/jni.h"
-#  elif __has_include("/usr/lib/jvm/java-17-openjdk-amd64/include/jni.h")
-#    include "/usr/lib/jvm/java-17-openjdk-amd64/include/jni.h"
-#  elif __has_include("/usr/lib/jvm/java-11-openjdk-amd64/include/jni.h")
-#    include "/usr/lib/jvm/java-11-openjdk-amd64/include/jni.h"
-#  else
-#    error "jni.h not found; add the JDK include directory to the compiler include path"
-#  endif
-#else
-#  include <jni.h>
-#endif
+#include <jni.h>
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
@@ -21,9 +7,12 @@
 #include <string.h>
 
 static void copy_text(char *dst, size_t cap, const unsigned char *src, unsigned long n) {
+    if (cap == 0) return;
     if (!src || n == 0) { dst[0] = '\0'; return; }
     size_t len = n < cap - 1 ? (size_t)n : cap - 1;
-    // ponytail: naive truncate; in a high-perf lib we'd check UTF-8 boundaries
+    if (n >= cap) {
+        while (len > 0 && (src[len] & 0xc0) == 0x80) len--;
+    }
     memcpy(dst, src, len);
     dst[len] = '\0';
 }
