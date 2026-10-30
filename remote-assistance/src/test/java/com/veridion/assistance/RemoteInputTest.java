@@ -72,6 +72,14 @@ class RemoteInputTest {
         return created;
     }
 
+    private ConsentClientHandler newHeadlessHandler() throws RemoteException {
+        ConsentClientHandler created = new ConsentClientHandler(
+                operator -> true, operator -> false, VALID_TOKEN, System::currentTimeMillis, 60_000,
+                () -> { throw new java.awt.HeadlessException(); }, command -> { });
+        handlers.add(created);
+        return created;
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Baseline consent / state-machine tests (9 pre-existing, preserved)
     // ─────────────────────────────────────────────────────────────────────────
@@ -437,6 +445,16 @@ class RemoteInputTest {
         String sessionId = handler.requestAssistance("Operator", VALID_TOKEN);
         assertDoesNotThrow(() -> handler.captureScreen(sessionId, VALID_TOKEN),
                 "Screen capture must succeed before expiry");
+    }
+
+    @Test
+    void captureScreenConvertsHeadlessDisplayFailureToRemoteException() throws RemoteException {
+        ConsentClientHandler headlessHandler = newHeadlessHandler();
+        String sessionId = headlessHandler.requestAssistance("Operator", VALID_TOKEN);
+
+        RemoteException error = assertThrows(RemoteException.class,
+                () -> headlessHandler.captureScreen(sessionId, VALID_TOKEN));
+        assertTrue(error.getMessage().contains("Screen capture requires an available display"));
     }
 
     /** Expiry is deterministic: advancing the injected clock beyond the timeout rejects capture. */

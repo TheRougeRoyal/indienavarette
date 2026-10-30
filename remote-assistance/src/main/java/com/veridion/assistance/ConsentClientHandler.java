@@ -255,14 +255,16 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
         auditLog.log("operator", "SCREEN_CAPTURE", "Session: " + sessionId);
 
         try {
+            java.awt.Dimension screenSize = screenSizeSupplier.get();
             Robot robot = new Robot();
-            java.awt.Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
             Rectangle screenRect = new Rectangle(0, 0, screenSize.width, screenSize.height);
             BufferedImage screenFullImage = robot.createScreenCapture(screenRect);
             try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
                 ImageIO.write(screenFullImage, "png", baos);
                 return baos.toByteArray();
             }
+        } catch (java.awt.HeadlessException e) {
+            throw new RemoteException("Screen capture requires an available display", e);
         } catch (java.awt.AWTException | IOException e) {
             throw new RemoteException("Failed to capture screen: " + e.getMessage());
         }
