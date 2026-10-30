@@ -85,7 +85,18 @@ public class ActivityClient implements AutoCloseable {
                 current.sendHeartbeat(clientId, credential);
                 lastHeartbeatNanos = now;
             }
-            DesktopTracker.CaptureResult result = windowTracker.capture();
+        } catch (Exception e) { scheduleRetry("Connection lost", e); return; }
+
+        DesktopTracker.CaptureResult result;
+        try {
+            result = windowTracker.capture();
+            if (result == null) throw new IllegalStateException("Desktop tracker returned no result");
+        } catch (RuntimeException e) {
+            System.err.println("Window metadata capture failed: " + e.getMessage());
+            result = new DesktopTracker.CaptureResult("UNAVAILABLE", "Unknown", "Window metadata unavailable");
+        }
+
+        try {
             current.reportActivity(new ActivityEvent(clientId, "[" + result.status() + "] " + result.appName(), result.windowTitle(), java.time.LocalDateTime.now()), credential);
         } catch (Exception e) { scheduleRetry("Connection lost", e); }
     }

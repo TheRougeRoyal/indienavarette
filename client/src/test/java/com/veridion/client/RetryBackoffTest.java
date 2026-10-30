@@ -7,6 +7,7 @@ import com.veridion.shared.IActivityServer;
 import java.rmi.RemoteException;
 import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RetryBackoffTest {
     @Test void closingIsIdempotentAndPreventsSchedulerRestart() {
@@ -53,11 +54,37 @@ class RetryBackoffTest {
         }
     }
 
+    @Test void captureFailureReportsUnavailableWithoutReenrolling() throws Exception {
+        String prior = System.getProperty("activity.enrollment.token");
+        System.setProperty("activity.enrollment.token", "test-enrollment-token-long-enough-12345");
+        AtomicInteger attempts = new AtomicInteger();
+        TestServer server = new TestServer();
+        ActivityClient client = new ActivityClient("localhost", () -> {
+            throw new IllegalStateException("display disconnected");
+        }, (host, port, id, token) -> {
+            attempts.incrementAndGet();
+            return new ServerConnector.Connection(server, "issued-credential");
+        });
+        try {
+            client.cycleSafely();
+            client.cycleSafely();
+            assertEquals(1, attempts.get());
+            assertEquals(2, server.heartbeats);
+            assertEquals(2, server.reports);
+            assertTrue(server.lastReportedApp.startsWith("[UNAVAILABLE]"));
+        } finally {
+            client.close();
+            if (prior == null) System.clearProperty("activity.enrollment.token");
+            else System.setProperty("activity.enrollment.token", prior);
+        }
+    }
+
     private static final class TestServer implements IActivityServer {
         int heartbeats;
         int reports;
+        String lastReportedApp;
         @Override public String registerClient(String id, String host, String token) { return "issued-credential"; }
-        @Override public void reportActivity(ActivityEvent event, String credential) { reports++; }
+        @Override public void reportActivity(ActivityEvent event, String credential) { reports++; lastReportedApp = event.appName(); }
         @Override public void sendHeartbeat(String id, String credential) { heartbeats++; }
     }
 }
