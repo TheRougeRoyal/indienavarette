@@ -6,6 +6,9 @@ import org.junit.jupiter.api.*;
 import java.awt.Dimension;
 import java.rmi.RemoteException;
 import java.rmi.server.UnicastRemoteObject;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Predicate;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -32,15 +35,33 @@ class RemoteInputTest {
 
     /** Handler that auto-accepts screen-capture consent but NOT input consent. */
     private ConsentClientHandler handler;
+    private List<ConsentClientHandler> handlers;
 
     @BeforeEach
     void setup() throws RemoteException {
-        handler = new ConsentClientHandler(operator -> true, VALID_TOKEN);
+        handlers = new ArrayList<>();
+        handler = newHandler(operator -> true, operator -> false);
     }
 
     @AfterEach
     void teardown() throws Exception {
-        try { UnicastRemoteObject.unexportObject(handler, true); } catch (Exception ignored) {}
+        for (ConsentClientHandler activeHandler : handlers) {
+            try { activeHandler.terminateSession(activeHandler.getActiveSessionId(), VALID_TOKEN); }
+            catch (Exception ignored) { }
+            try { UnicastRemoteObject.unexportObject(activeHandler, true); }
+            catch (Exception ignored) { }
+        }
+    }
+
+    private ConsentClientHandler newHandler(Predicate<String> consent, Predicate<String> inputConsent)
+            throws RemoteException {
+        ConsentClientHandler created = new ConsentClientHandler(consent, inputConsent, VALID_TOKEN);
+        handlers.add(created);
+        return created;
+    }
+
+    private ConsentClientHandler newHandler(Predicate<String> consent) throws RemoteException {
+        return newHandler(consent, operator -> false);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -62,7 +83,7 @@ class RemoteInputTest {
 
     @Test
     void testInputAcceptedInControlState() throws RemoteException {
-        ConsentClientHandler autoHandler = new ConsentClientHandler(op -> true, op -> true, VALID_TOKEN);
+        ConsentClientHandler autoHandler = newHandler(op -> true, op -> true);
         try {
             String sId = autoHandler.requestAssistance("Operator", VALID_TOKEN);
             autoHandler.requestInputControl(sId, VALID_TOKEN);
@@ -76,7 +97,7 @@ class RemoteInputTest {
     @Test
     void testInputConsentDenialLeavesSessionViewOnly() throws RemoteException {
         ConsentClientHandler viewOnlyHandler =
-                new ConsentClientHandler(op -> true, op -> false, VALID_TOKEN);
+                newHandler(op -> true, op -> false);
         try {
             String sessionId = viewOnlyHandler.requestAssistance("Operator", VALID_TOKEN);
             viewOnlyHandler.requestInputControl(sessionId, VALID_TOKEN);
@@ -123,7 +144,7 @@ class RemoteInputTest {
 
     @Test
     void testSessionTerminationBlocksInput() throws RemoteException {
-        ConsentClientHandler autoHandler = new ConsentClientHandler(op -> true, VALID_TOKEN);
+        ConsentClientHandler autoHandler = newHandler(op -> true);
         try {
             String sId = autoHandler.requestAssistance("Operator", VALID_TOKEN);
             autoHandler.requestInputControl(sId, VALID_TOKEN);
@@ -230,7 +251,7 @@ class RemoteInputTest {
      */
     @Test
     void rejectsStaleSequenceNumbers() throws RemoteException {
-        ConsentClientHandler autoHandler = new ConsentClientHandler(op -> true, op -> true, VALID_TOKEN);
+        ConsentClientHandler autoHandler = newHandler(op -> true, op -> true);
         try {
             String sId = autoHandler.requestAssistance("Operator", VALID_TOKEN);
             autoHandler.requestInputControl(sId, VALID_TOKEN);
@@ -267,7 +288,7 @@ class RemoteInputTest {
      */
     @Test
     void sequenceNumberResetsForNewSession() throws RemoteException {
-        ConsentClientHandler autoHandler = new ConsentClientHandler(op -> true, op -> true, VALID_TOKEN);
+        ConsentClientHandler autoHandler = newHandler(op -> true, op -> true);
         try {
             // Session 1: send seq=100
             String sId1 = autoHandler.requestAssistance("Operator", VALID_TOKEN);
@@ -297,7 +318,7 @@ class RemoteInputTest {
      */
     @Test
     void releasesHeldKeysOnTermination() throws RemoteException {
-        ConsentClientHandler autoHandler = new ConsentClientHandler(op -> true, op -> true, VALID_TOKEN);
+        ConsentClientHandler autoHandler = newHandler(op -> true, op -> true);
         try {
             String sId = autoHandler.requestAssistance("Operator", VALID_TOKEN);
             autoHandler.requestInputControl(sId, VALID_TOKEN);
@@ -323,7 +344,7 @@ class RemoteInputTest {
      */
     @Test
     void keyReleaseCommandRemovesKeyFromPressedSet() throws RemoteException {
-        ConsentClientHandler autoHandler = new ConsentClientHandler(op -> true, op -> true, VALID_TOKEN);
+        ConsentClientHandler autoHandler = newHandler(op -> true, op -> true);
         try {
             String sId = autoHandler.requestAssistance("Operator", VALID_TOKEN);
             autoHandler.requestInputControl(sId, VALID_TOKEN);
@@ -380,7 +401,7 @@ class RemoteInputTest {
      */
     @Test
     void logsInputExecutedAction() throws RemoteException {
-        ConsentClientHandler autoHandler = new ConsentClientHandler(op -> true, op -> true, VALID_TOKEN);
+        ConsentClientHandler autoHandler = newHandler(op -> true, op -> true);
         try {
             String sId = autoHandler.requestAssistance("Operator", VALID_TOKEN);
             autoHandler.requestInputControl(sId, VALID_TOKEN);
@@ -425,7 +446,7 @@ class RemoteInputTest {
         // Create a handler with a 1 ms session timeout to avoid real sleeping
         System.setProperty("activity.assistance.session-timeout-ms", "1");
         ConsentClientHandler shortTimeoutHandler =
-                new ConsentClientHandler(op -> true, op -> true, VALID_TOKEN);
+                newHandler(op -> true, op -> true);
         try {
             String sId = shortTimeoutHandler.requestAssistance("Operator", VALID_TOKEN);
 
@@ -452,7 +473,7 @@ class RemoteInputTest {
     void expiresSessionForInputAfterTimeout() throws Exception {
         System.setProperty("activity.assistance.session-timeout-ms", "1");
         ConsentClientHandler shortTimeoutHandler =
-                new ConsentClientHandler(op -> true, op -> true, VALID_TOKEN);
+                newHandler(op -> true, op -> true);
         try {
             String sId = shortTimeoutHandler.requestAssistance("Operator", VALID_TOKEN);
             shortTimeoutHandler.requestInputControl(sId, VALID_TOKEN);
@@ -476,7 +497,7 @@ class RemoteInputTest {
     void sessionStateIsTerminatedAfterExpiry() throws Exception {
         System.setProperty("activity.assistance.session-timeout-ms", "1");
         ConsentClientHandler shortTimeoutHandler =
-                new ConsentClientHandler(op -> true, op -> true, VALID_TOKEN);
+                newHandler(op -> true, op -> true);
         try {
             String sId = shortTimeoutHandler.requestAssistance("Operator", VALID_TOKEN);
             Thread.sleep(10);
