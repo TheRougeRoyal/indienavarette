@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.UUID;
 import java.util.function.Predicate;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 import java.util.Set;
 import java.util.HashSet;
 import java.awt.Rectangle;
@@ -60,6 +61,8 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     private final Predicate<String> inputConsentPrompt;
     private final byte[] operatorCredentialHash;
     private final LongSupplier currentTimeMillis;
+    private final Supplier<java.awt.Dimension> screenSizeSupplier;
+    private final InputExecutor inputExecutor;
 
     /** Per-session sequence number. Resets to -1 on new session. */
     private long lastSequenceNumber = -1;
@@ -98,6 +101,14 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     ConsentClientHandler(Predicate<String> consentPrompt, Predicate<String> inputConsentPrompt,
                          String operatorCredential, LongSupplier currentTimeMillis,
                          long sessionTimeoutMs) throws RemoteException {
+        this(consentPrompt, inputConsentPrompt, operatorCredential, currentTimeMillis, sessionTimeoutMs,
+                null, null);
+    }
+
+    ConsentClientHandler(Predicate<String> consentPrompt, Predicate<String> inputConsentPrompt,
+                         String operatorCredential, LongSupplier currentTimeMillis,
+                         long sessionTimeoutMs, Supplier<java.awt.Dimension> screenSizeSupplier,
+                         InputExecutor inputExecutor) throws RemoteException {
         super(0, new TimeoutSslRmiClientSocketFactory(), new SslRMIServerSocketFactory(null, null, false));
         if (operatorCredential == null || operatorCredential.length() < 32)
             throw new RemoteException("Configure a protected assistance operator token of at least 32 characters");
@@ -108,6 +119,9 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
         this.operatorCredentialHash = sha256(operatorCredential);
         this.currentTimeMillis = currentTimeMillis;
         this.sessionTimeoutMs = sessionTimeoutMs;
+        this.screenSizeSupplier = screenSizeSupplier == null
+                ? () -> Toolkit.getDefaultToolkit().getScreenSize() : screenSizeSupplier;
+        this.inputExecutor = inputExecutor == null ? this::executeInputWithRobot : inputExecutor;
     }
 
     // ── Auth helpers ──────────────────────────────────────────────────────────
@@ -287,9 +301,9 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
      * the last accepted sequence number for this session. Commands with equal or lower numbers are
      * rejected to prevent replay attacks.
      *
-     * <p><b>Input validation:</b> {@link RemoteInputCommand#validate()} is called first; any
-     * out-of-bounds coordinates, invalid key codes, or invalid button/scroll values cause an
-     * {@link IllegalArgumentException} that is re-thrown as a {@link RemoteException}.
+     * <p><b>Input validation:</b> after credential, session, and replay checks, command bounds
+     * and values are validated before any Robot action. Invalid bounds, key codes, buttons, or
+     * scroll values are returned as a {@link RemoteException}.
      *
      * <p><b>Key tracking:</b> {@code KEY_PRESS} events add the key code to an internal set;
      * {@code KEY_RELEASE} events remove it. The set is cleared (and all keys released) when the
@@ -298,18 +312,31 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
      * @param sessionId          active session UUID
      * @param operatorCredential shared secret
      * @param command            the input command to execute; must not be {@code null}
-     * @throws RemoteException if not authorized, session is expired/invalid, the sequence number
-     *                         is stale, or the AWT Robot fails
+     * @throws RemoteException if the credential is invalid, the session is expired/invalid, the
+     *                         sequence number is stale, validation fails, no display is available,
+     *                         or the AWT Robot fails
      */
     @Override
     public synchronized void executeInput(String sessionId, String operatorCredential,
                                           RemoteInputCommand command) throws RemoteException {
         if (command == null) throw new RemoteException("Command cannot be null");
 
-        // Validate bounds and values before any Robot action. Convert a headless display error
-        // into a clear RMI error instead of leaking AWT's HeadlessException.
+        if (!authorized(operatorCredential)) throw new RemoteException("Assistance operator is not authorized");
+
+        checkSessionExpiry();
+
+        if (sessionId == null || !sessionId.equals(activeSessionId) || state != SessionState.ACTIVE_CONTROL) {
+            throw new RemoteException("Remote input is not authorized for this session");
+        }
+
+        if (command.sequenceNumber() <= lastSequenceNumber) {
+            throw new RemoteException(
+                    "Duplicate or stale command sequence number: " + command.sequenceNumber());
+        }
+
+        // The credential, session, and replay checks precede display access and validation.
         try {
-            java.awt.Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
+            java.awt.Dimension screenSize = screenSizeSupplier.get();
             command.validate(screenSize);
         } catch (java.awt.HeadlessException e) {
             throw new RemoteException("Input validation requires an available display", e);
@@ -317,33 +344,26 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
             throw new RemoteException("Invalid command: " + e.getMessage(), e);
         }
 
-        if (!authorized(operatorCredential)) throw new RemoteException("Assistance operator is not authorized");
-
-        // Issue 5: session expiry check
-        checkSessionExpiry();
-
-        if (sessionId == null || !sessionId.equals(activeSessionId) || state != SessionState.ACTIVE_CONTROL) {
-            throw new RemoteException("Remote input is not authorized for this session");
-        }
-
-        // Issue 2: replay protection – sequence number must be strictly increasing
-        if (command.sequenceNumber() <= lastSequenceNumber) {
-            throw new RemoteException(
-                    "Duplicate or stale command sequence number: " + command.sequenceNumber());
-        }
+        // Consume the sequence only after the entire command has passed validation.
         lastSequenceNumber = command.sequenceNumber();
 
         auditLog.log("operator", "INPUT_EXECUTED",
                 "Type: " + command.type() + " Seq: " + command.sequenceNumber());
 
+        inputExecutor.execute(command);
+    }
+
+    @FunctionalInterface
+    interface InputExecutor { void execute(RemoteInputCommand command) throws RemoteException; }
+
+    private void executeInputWithRobot(RemoteInputCommand command) throws RemoteException {
         try {
             Robot robot = new Robot();
             switch (command.type()) {
-                case MOUSE_MOVE   -> robot.mouseMove(command.x(), command.y());
-                case MOUSE_PRESS  -> robot.mousePress(command.button());
+                case MOUSE_MOVE -> robot.mouseMove(command.x(), command.y());
+                case MOUSE_PRESS -> robot.mousePress(command.button());
                 case MOUSE_RELEASE -> robot.mouseRelease(command.button());
                 case MOUSE_SCROLL -> robot.mouseWheel(command.amount());
-                // Issue 3: track pressed keys so they can be released on session termination
                 case KEY_PRESS -> {
                     robot.keyPress(command.keyCode());
                     pressedKeys.add(command.keyCode());
