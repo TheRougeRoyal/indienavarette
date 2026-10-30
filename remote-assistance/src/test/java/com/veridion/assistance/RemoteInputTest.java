@@ -51,9 +51,7 @@ class RemoteInputTest {
     @AfterEach
     void teardown() throws Exception {
         for (ConsentClientHandler activeHandler : handlers) {
-            try { activeHandler.terminateSession(activeHandler.getActiveSessionId(), VALID_TOKEN); }
-            catch (Exception ignored) { }
-            try { UnicastRemoteObject.unexportObject(activeHandler, true); }
+            try { activeHandler.close(); }
             catch (Exception ignored) { }
         }
     }
@@ -134,6 +132,97 @@ class RemoteInputTest {
             assertDoesNotThrow(() -> autoHandler.executeInput(sId, VALID_TOKEN, cmd));
         } finally {
             UnicastRemoteObject.unexportObject(autoHandler, true);
+        }
+    }
+
+    @Test
+    void blockedInputDoesNotHoldHandlerLockAndTerminationDropsQueuedCommands() throws Exception {
+        CountDownLatch firstActionStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirstAction = new CountDownLatch(1);
+        List<Long> executed = java.util.Collections.synchronizedList(new ArrayList<>());
+        ConsentClientHandler queuedHandler = new ConsentClientHandler(
+                op -> true, op -> true, VALID_TOKEN, System::currentTimeMillis, 60_000,
+                () -> TEST_SCREEN, command -> {
+                    executed.add(command.sequenceNumber());
+                    if (command.sequenceNumber() == 1) {
+                        firstActionStarted.countDown();
+                        try {
+                            if (!releaseFirstAction.await(5, TimeUnit.SECONDS))
+                                throw new IllegalStateException("test did not release input action");
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new RemoteException("interrupted", e);
+                        }
+                    }
+                });
+        handlers.add(queuedHandler);
+        String sessionId = queuedHandler.requestAssistance("Operator", VALID_TOKEN);
+        queuedHandler.requestInputControl(sessionId, VALID_TOKEN);
+        var first = CompletableFuture.runAsync(() -> executeMove(queuedHandler, sessionId, 1));
+        assertTrue(firstActionStarted.await(2, TimeUnit.SECONDS));
+
+        var stateRead = CompletableFuture.supplyAsync(queuedHandler::getState);
+        assertEquals(ConsentClientHandler.SessionState.ACTIVE_CONTROL,
+                stateRead.get(2, TimeUnit.SECONDS), "state read must not wait for Robot action");
+        var second = CompletableFuture.runAsync(() -> executeMove(queuedHandler, sessionId, 2));
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (queuedHandler.getLastSequenceNumber() != 2 && System.nanoTime() < deadline)
+            Thread.yield();
+        assertEquals(2, queuedHandler.getLastSequenceNumber(), "second command should be queued");
+
+        var termination = CompletableFuture.runAsync(() -> {
+            try { queuedHandler.terminateSession(sessionId, VALID_TOKEN); }
+            catch (RemoteException e) { throw new IllegalStateException(e); }
+        });
+        termination.get(2, TimeUnit.SECONDS);
+        releaseFirstAction.countDown();
+        first.get(2, TimeUnit.SECONDS);
+        assertThrows(java.util.concurrent.ExecutionException.class, () -> second.get(2, TimeUnit.SECONDS));
+        assertEquals(List.of(1L), executed, "queued command must be dropped after termination");
+    }
+
+    @Test
+    void inputWorkerExecutesAcceptedCommandsInSequenceOrder() throws Exception {
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        List<Long> executed = java.util.Collections.synchronizedList(new ArrayList<>());
+        ConsentClientHandler orderedHandler = new ConsentClientHandler(
+                op -> true, op -> true, VALID_TOKEN, System::currentTimeMillis, 60_000,
+                () -> TEST_SCREEN, command -> {
+                    executed.add(command.sequenceNumber());
+                    if (command.sequenceNumber() == 1) {
+                        firstStarted.countDown();
+                        try {
+                            if (!releaseFirst.await(5, TimeUnit.SECONDS))
+                                throw new IllegalStateException("test did not release first action");
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new RemoteException("interrupted", e);
+                        }
+                    }
+                });
+        handlers.add(orderedHandler);
+        String sessionId = orderedHandler.requestAssistance("Operator", VALID_TOKEN);
+        orderedHandler.requestInputControl(sessionId, VALID_TOKEN);
+        var first = CompletableFuture.runAsync(() -> executeMove(orderedHandler, sessionId, 1));
+        assertTrue(firstStarted.await(2, TimeUnit.SECONDS));
+        var second = CompletableFuture.runAsync(() -> executeMove(orderedHandler, sessionId, 2));
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (orderedHandler.getLastSequenceNumber() != 2 && System.nanoTime() < deadline)
+            Thread.yield();
+        assertEquals(2, orderedHandler.getLastSequenceNumber());
+        releaseFirst.countDown();
+        first.get(2, TimeUnit.SECONDS);
+        second.get(2, TimeUnit.SECONDS);
+        assertEquals(List.of(1L, 2L), executed);
+    }
+
+    private static void executeMove(ConsentClientHandler target, String sessionId, long sequence) {
+        try {
+            target.executeInput(sessionId, VALID_TOKEN,
+                    new RemoteInputCommand(CommandType.MOUSE_MOVE, 10, 10, 0, 0, 0, sequence));
+        } catch (RemoteException e) {
+            throw new IllegalStateException(e);
         }
     }
 

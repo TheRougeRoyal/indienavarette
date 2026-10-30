@@ -11,6 +11,13 @@ import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.Set;
 import java.util.HashSet;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.awt.Rectangle;
 import java.awt.Robot;
 import java.awt.Toolkit;
@@ -40,7 +47,7 @@ import com.veridion.shared.RemoteInputCommand;
  *       are not logged.</li>
  * </ul>
  */
-public final class ConsentClientHandler extends UnicastRemoteObject implements IClientHandler {
+public final class ConsentClientHandler extends UnicastRemoteObject implements IClientHandler, AutoCloseable {
 
     // ── Session expiry ────────────────────────────────────────────────────────
     /**
@@ -64,6 +71,7 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
     private final LongSupplier currentTimeMillis;
     private final Supplier<java.awt.Dimension> screenSizeSupplier;
     private final InputExecutor inputExecutor;
+    private final ThreadPoolExecutor inputActionQueue;
 
     /** Per-session sequence number. Resets to -1 on new session. */
     private long lastSequenceNumber = -1;
@@ -123,6 +131,12 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
         this.screenSizeSupplier = screenSizeSupplier == null
                 ? () -> Toolkit.getDefaultToolkit().getScreenSize() : screenSizeSupplier;
         this.inputExecutor = inputExecutor == null ? this::executeInputWithRobot : inputExecutor;
+        this.inputActionQueue = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(256), task -> {
+                    Thread thread = new Thread(task, "remote-assistance-input");
+                    thread.setDaemon(true);
+                    return thread;
+                }, new ThreadPoolExecutor.AbortPolicy());
     }
 
     // ── Auth helpers ──────────────────────────────────────────────────────────
@@ -370,40 +384,83 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
      *                         or the AWT Robot fails
      */
     @Override
-    public synchronized void executeInput(String sessionId, String operatorCredential,
-                                          RemoteInputCommand command) throws RemoteException {
+    public void executeInput(String sessionId, String operatorCredential,
+                             RemoteInputCommand command) throws RemoteException {
         if (command == null) throw new RemoteException("Command cannot be null");
 
-        if (!authorized(operatorCredential)) throw new RemoteException("Assistance operator is not authorized");
+        Future<Boolean> queuedAction;
+        synchronized (this) {
+            if (!authorized(operatorCredential))
+                throw new RemoteException("Assistance operator is not authorized");
 
-        checkSessionExpiry();
+            checkSessionExpiry();
 
-        if (sessionId == null || !sessionId.equals(activeSessionId) || state != SessionState.ACTIVE_CONTROL) {
-            throw new RemoteException("Remote input is not authorized for this session");
+            if (sessionId == null || !sessionId.equals(activeSessionId)
+                    || state != SessionState.ACTIVE_CONTROL) {
+                throw new RemoteException("Remote input is not authorized for this session");
+            }
+
+            if (command.sequenceNumber() <= lastSequenceNumber) {
+                throw new RemoteException(
+                        "Duplicate or stale command sequence number: " + command.sequenceNumber());
+            }
+
+            // The credential, session, and replay checks precede display access and validation.
+            try {
+                java.awt.Dimension screenSize = screenSizeSupplier.get();
+                command.validate(screenSize);
+            } catch (java.awt.HeadlessException e) {
+                throw new RemoteException("Input validation requires an available display", e);
+            } catch (IllegalArgumentException e) {
+                throw new RemoteException("Invalid command: " + e.getMessage(), e);
+            }
+
+            auditLog.log(activeOperatorName, "INPUT_EXECUTED",
+                    "Type: " + command.type() + " Seq: " + command.sequenceNumber());
+            try {
+                queuedAction = inputActionQueue.submit(() -> executeQueuedInput(command, sessionId));
+            } catch (RejectedExecutionException e) {
+                throw new RemoteException("Input action queue is unavailable", e);
+            }
+            // Consume the sequence after validation and successful queue submission, still under
+            // the same lock that orders submissions.
+            lastSequenceNumber = command.sequenceNumber();
         }
 
-        if (command.sequenceNumber() <= lastSequenceNumber) {
-            throw new RemoteException(
-                    "Duplicate or stale command sequence number: " + command.sequenceNumber());
-        }
-
-        // The credential, session, and replay checks precede display access and validation.
         try {
-            java.awt.Dimension screenSize = screenSizeSupplier.get();
-            command.validate(screenSize);
-        } catch (java.awt.HeadlessException e) {
-            throw new RemoteException("Input validation requires an available display", e);
-        } catch (IllegalArgumentException e) {
-            throw new RemoteException("Invalid command: " + e.getMessage(), e);
+            if (!queuedAction.get())
+                throw new RemoteException("Session ended before the input action could execute");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RemoteException("Interrupted while waiting for input action", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RemoteException remoteException) throw remoteException;
+            throw new RemoteException("Input execution failed", cause);
+        } catch (CancellationException e) {
+            throw new RemoteException("Input action was cancelled because the handler is closing", e);
         }
+    }
 
-        // Consume the sequence only after the entire command has passed validation.
-        lastSequenceNumber = command.sequenceNumber();
-
-        auditLog.log(activeOperatorName, "INPUT_EXECUTED",
-                "Type: " + command.type() + " Seq: " + command.sequenceNumber());
+    private boolean executeQueuedInput(RemoteInputCommand command, String sessionId) throws RemoteException {
+        synchronized (this) {
+            if (!sessionId.equals(activeSessionId) || state != SessionState.ACTIVE_CONTROL) return false;
+        }
 
         inputExecutor.execute(command);
+
+        boolean releaseKeyAfterTermination = false;
+        synchronized (this) {
+            if (command.type() == RemoteInputCommand.CommandType.KEY_PRESS) {
+                if (sessionId.equals(activeSessionId) && state == SessionState.ACTIVE_CONTROL)
+                    pressedKeys.add(command.keyCode());
+                else releaseKeyAfterTermination = true;
+            } else if (command.type() == RemoteInputCommand.CommandType.KEY_RELEASE) {
+                pressedKeys.remove(command.keyCode());
+            }
+        }
+        if (releaseKeyAfterTermination) releaseKey(command.keyCode());
+        return true;
     }
 
     @FunctionalInterface
@@ -419,11 +476,9 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
                 case MOUSE_SCROLL -> robot.mouseWheel(command.amount());
                 case KEY_PRESS -> {
                     robot.keyPress(command.keyCode());
-                    pressedKeys.add(command.keyCode());
                 }
                 case KEY_RELEASE -> {
                     robot.keyRelease(command.keyCode());
-                    pressedKeys.remove(command.keyCode());
                 }
                 default -> throw new RemoteException("Unsupported command type");
             }
@@ -449,6 +504,26 @@ public final class ConsentClientHandler extends UnicastRemoteObject implements I
         } finally {
             pressedKeys.clear();
         }
+    }
+
+    private void releaseKey(int keyCode) {
+        try { new Robot().keyRelease(keyCode); }
+        catch (java.awt.AWTException | java.awt.HeadlessException ignored) { }
+    }
+
+    /** Stops queued input work, releases the active session, and unexports this RMI object. */
+    @Override public void close() {
+        synchronized (this) {
+            if (state != SessionState.IDLE && state != SessionState.TERMINATED
+                    || pendingSessionPromptToken != null || pendingInputPromptToken != null) {
+                terminateSessionInternal();
+            }
+        }
+        for (Runnable task : inputActionQueue.shutdownNow()) {
+            if (task instanceof Future<?> future) future.cancel(false);
+        }
+        try { UnicastRemoteObject.unexportObject(this, true); }
+        catch (java.rmi.NoSuchObjectException ignored) { }
     }
 
     // ── Prompt helpers ────────────────────────────────────────────────────────

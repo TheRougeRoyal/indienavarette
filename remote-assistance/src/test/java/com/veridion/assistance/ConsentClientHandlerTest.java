@@ -27,9 +27,7 @@ class ConsentClientHandlerTest {
 
     @AfterEach void tearDown() {
         for (ConsentClientHandler activeHandler : handlers) {
-            try { activeHandler.terminateSession(activeHandler.getActiveSessionId(), TOKEN); }
-            catch (Exception ignored) { }
-            try { UnicastRemoteObject.unexportObject(activeHandler, true); }
+            try { activeHandler.close(); }
             catch (Exception ignored) { }
         }
     }
